@@ -13,7 +13,12 @@ import threading
 import time
 import math
 from typing import Any, Protocol
-from edge.mujoco_simulation import MuJoCoSimulation
+try:
+    from edge.mujoco_simulation import MuJoCoSimulation
+except ModuleNotFoundError:
+    # Support the documented direct source invocation (`python edge/runtime.py`)
+    # as well as package imports and the frozen PyInstaller entry point.
+    from mujoco_simulation import MuJoCoSimulation
 
 RUNTIME_VERSION = "0.1.0"
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")

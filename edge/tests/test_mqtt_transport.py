@@ -49,7 +49,7 @@ class MqttTransportTests(unittest.TestCase):
     @staticmethod
     def command_steps(action="home"):
         steps = [{"type": "arm.select", "arm": "left"}]
-        steps.append({"type": action, **({"arm": "left"} if action == "home" else {})})
+        steps.append({"type": action, **({"arm": "left"} if action in {"home", "gripper.open", "gripper.close"} else {})})
         return steps
 
     def tearDown(self):

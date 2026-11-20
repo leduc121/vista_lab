@@ -115,3 +115,57 @@ artifacts.
   verified. No AWS endpoint or physical robot was accessed.
 - Windows NSIS and macOS DMG were not rebuilt or tested on their native
   runners. The existing Windows artifact remains stale relative to this source.
+
+## Final integration and release acceptance attempt — 2026-11-20
+
+This is the latest acceptance record and supersedes earlier smoke/package
+statements above where results differ.
+
+- `npm test`: 19 API/security contract tests and 3 Node test files passed;
+  `edge/tests`: 15 Python tests passed; `npm run typecheck` passed.
+- A test-only mTLS session against a disposable real loopback Mosquitto 2
+  broker passed: one authorized lab command executed in MuJoCo, emitted 11
+  six-joint SIMULATION telemetry frames over MQTT, and returned an accepted
+  result ACK. This is transport/runtime integration only; it does not represent
+  Education API authorization, backend provisioning, or an authorized Digital
+  Twin session. The test first exposed and fixed a mismatch accepting `arm` on
+  a gripper command.
+- Fresh Linux x64 AppImage and DEB were rebuilt from current source. The DEB
+  payload was extracted under `/tmp` (not system-installed); Electron `ldd`
+  showed no missing shared libraries, and its bundled Edge Runtime loaded the
+  packaged MuJoCo model and completed a simulation producing 11 six-joint
+  frames with `motionEnabled=false`. The AppImage artifact was built but its
+  GUI launch was not accepted. This was an extracted-package check on the same
+  Linux host, not a different clean OS image or an installed DEB test.
+- Latest AppImage SHA-256: `506bc130895f8e0c11fd4f1307fc4cd434e108e22ce7e8bb113d967116a356fe`.
+  Latest DEB SHA-256: `e34bec3180d241887af8412b27e86ec839d2c1b53c870f1c0e3c06943a588a38`.
+- Renderer smoke opened My Labs and the Blockly/MuJoCo workspace at 1420×960
+  and printed a non-overflowing two-column workspace layout. The test then hung
+  after workspace inspection before the Save interaction; it was interrupted.
+  Full UI acceptance, all listed major screens, accessibility and responsive
+  layout are therefore **not accepted**. Settings and Twin visual evidence from
+  prior partial screenshots does not establish the complete screen journey.
+- `npm run test:integration` stopped at the harness guard because there is no
+  isolated Education API, disposable student accounts, or test attempt. Local
+  GoTrue health was available, but Education API `127.0.0.1:3001` and Twin
+  `127.0.0.1:8767` were unavailable. No live login, attempts, program writes,
+  simulation result retrieval/submission/revocation, or Twin authorization was
+  accepted.
+- The inspected backend has no `/desktop/devices/enroll`,
+  `/desktop/devices/{id}/certificate/renew`, `/desktop/devices/{id}/revoke`,
+  or `/desktop/devices/{id}` API. It also lacks a student-authorized local
+  MuJoCo telemetry bridge; `/internal/simulation-telemetry` is server-only.
+  See `BACKEND_HANDOFF.md` for proposed contracts and safety boundary.
+- CHECKIK's active LeRobot environment reports `lerobot==0.6.2` and
+  `feetech-servo-sdk==1.0.0` under Python 3.12. The shipped Edge Runtime is
+  Python 3.11 and reports LeRobot unavailable; those packages were not added to
+  the installer because the CHECKIK environment is not a verified portable
+  dependency lock for the three target OSes. The SO-101 adapter remains
+  optional/read-only. Port enumeration, robot connection, calibration checks,
+  and any live diagnostics require a separate supervised hardware session; no
+  physical device was opened.
+- Windows and macOS native builds were not run on CI runners in this session.
+  Existing Windows output is stale relative to current source; macOS DMG is
+  unavailable. No platform acceptance is claimed for either.
+- No AWS call, backend mutation, hardware connection, or release distribution
+  occurred.

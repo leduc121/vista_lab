@@ -14,10 +14,12 @@ async function main() {
   const chrome = '/usr/bin/google-chrome-stable';
   browser = await puppeteer.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-crash-reporter', '--disable-breakpad', '--disable-dev-shm-usage', '--no-zygote', '--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
   const page = await browser.newPage();
+  page.setDefaultTimeout(8000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setViewport({ width: 1420, height: 960 });
   await page.goto('http://127.0.0.1:4173/dev/index.html?screen=labs', { waitUntil: 'networkidle0' });
+  console.log('UI smoke: labs loaded');
   await page.waitForSelector('.robot-status-banner');
   const banner = await page.$eval('.robot-status-banner', (el) => el.textContent);
   if (!banner.includes('SIMULATION') || !banner.includes('đang bị khoá')) throw new Error(`Expected honest simulation banner; got: ${banner}`);
@@ -30,6 +32,7 @@ async function main() {
   await page.screenshot({ path: path.join(out, 'lab-eligibility.png'), fullPage: true });
   await page.evaluate(() => [...document.querySelectorAll('button')].find((button) => button.textContent.includes('Mở Blockly & Simulation'))?.click());
   await page.waitForSelector('.blocklySvg', { timeout: 15000 });
+  console.log('UI smoke: workspace opened');
   await page.waitForSelector('[data-twin-canvas] canvas', { timeout: 15000 });
   await page.waitForFunction(() => document.querySelector('.telemetry-note')?.textContent.includes('SO-101 asset loaded'), { timeout: 15000 }).catch(() => {});
   const layout = await page.$eval('.feature-grid', (grid) => ({
@@ -42,13 +45,17 @@ async function main() {
   const workspaceText = await page.$eval('.feature-workspace-page', (el) => el.textContent);
   if (!workspaceText.toLowerCase().includes('simulation') || !workspaceText.toLowerCase().includes('physical')) throw new Error('Workspace did not clearly label simulation and physical mode.');
   await page.click('[data-save]');
+  console.log('UI smoke: save control clicked');
   await page.waitForFunction(() => document.querySelector('[data-save-state]')?.textContent.includes('Demo fixture'));
   await page.waitForFunction(() => !document.querySelector('[data-version]')?.disabled);
   await page.click('[data-version]');
+  console.log('UI smoke: version control clicked');
   await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('No VISTA record was created'));
   await page.click('[data-run]');
+  console.log('UI smoke: run control clicked');
   await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('did not create a VISTA schematic result'), { timeout: 10000 });
   await page.evaluate(() => [...document.querySelectorAll('button')].find((button) => button.textContent.includes('SO-101 Digital Twin'))?.click());
+  console.log('UI smoke: twin entry clicked');
   await page.waitForSelector('.feature-assignment', { timeout: 10000 });
   await page.click('.feature-assignment');
   await page.waitForFunction(() => document.querySelector('[data-twin-note]')?.textContent.includes('URDF/STL loaded'), { timeout: 20000 });

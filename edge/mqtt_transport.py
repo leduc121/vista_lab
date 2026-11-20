@@ -236,7 +236,7 @@ class MqttTransport:
             fields = {
                 "arm.select": {"type", "arm"}, "home": {"type", "arm"},
                 "preview.move_xyz": {"type", "mode", "frame", "arm", "position"},
-                "gripper.open": {"type"}, "gripper.close": {"type"}, "wait": {"type", "durationMs"}
+                "gripper.open": {"type", "arm"}, "gripper.close": {"type", "arm"}, "wait": {"type", "durationMs"}
             }[step["type"]]
             if set(step) - fields:
                 raise ValueError("Lab command step contains unsupported fields.")
