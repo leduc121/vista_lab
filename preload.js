@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('vista', Object.freeze({
   edgeJointState: () => ipcRenderer.invoke('edge:joint-state'),
   provisioningStatus: () => ipcRenderer.invoke('provisioning:status'),
   createEnrollmentKey: () => ipcRenderer.invoke('provisioning:create-key'),
+  enrollDevice: (code) => ipcRenderer.invoke('provisioning:enroll', code),
+  refreshDeviceProvisioning: () => ipcRenderer.invoke('provisioning:refresh'),
   runSimulation: (attemptId, command, confirmation) => ipcRenderer.invoke('edge:simulate', attemptId, command, confirmation),
   cancelSimulation: () => ipcRenderer.invoke('edge:cancel-simulation'),
   pauseSimulation: () => ipcRenderer.invoke('edge:pause-simulation'),

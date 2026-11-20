@@ -7,7 +7,10 @@ const root = path.join(__dirname, '..');
 const out = '/tmp/vista-desktop-smoke';
 const server = spawn(process.execPath, [path.join(root, 'dev/server.mjs')], { cwd: root, stdio: 'ignore' });
 let browser;
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const bounded = (promise, label, ms = 12000) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms))
+]);
 
 async function main() {
   fs.mkdirSync(out, { recursive: true });
@@ -16,6 +19,7 @@ async function main() {
   const page = await browser.newPage();
   page.setDefaultTimeout(8000);
   const errors = [];
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(`console: ${message.text()}`); });
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setViewport({ width: 1420, height: 960 });
   await page.goto('http://127.0.0.1:4173/dev/index.html?screen=labs', { waitUntil: 'networkidle0' });
@@ -41,29 +45,39 @@ async function main() {
   }));
   console.log('Workspace layout:', JSON.stringify(layout));
   if (layout.grid === 'none' || layout.bounds[0].height < 400) throw new Error('Blockly workspace layout stylesheet did not load.');
-  await page.screenshot({ path: path.join(out, 'blockly-digital-twin.png'), fullPage: true });
+  // Chrome capture stalls on this Blockly+WebGL surface in headless mode.
+  // DOM/layout assertions below are the workspace evidence for this runner.
   const workspaceText = await page.$eval('.feature-workspace-page', (el) => el.textContent);
+  console.log('UI smoke: workspace text read');
   if (!workspaceText.toLowerCase().includes('simulation') || !workspaceText.toLowerCase().includes('physical')) throw new Error('Workspace did not clearly label simulation and physical mode.');
-  await page.click('[data-save]');
+  console.log('UI smoke: before Save click');
+  await bounded(page.evaluate(() => document.querySelector('[data-save]')?.click()), 'Save click');
   console.log('UI smoke: save control clicked');
-  await page.waitForFunction(() => document.querySelector('[data-save-state]')?.textContent.includes('Demo fixture'));
+  await page.waitForFunction(() => /Demo fixture|Save failed/.test(document.querySelector('[data-save-state]')?.textContent || ''), { timeout: 12000 });
+  console.log('UI smoke: save state observed');
+  const saveState = await page.$eval('[data-save-state]', (el) => el.textContent);
+  if (!saveState.includes('Demo fixture')) throw new Error(`Save did not finish successfully: ${saveState}`);
   await page.waitForFunction(() => !document.querySelector('[data-version]')?.disabled);
-  await page.click('[data-version]');
+  console.log('UI smoke: version enabled');
+  await page.evaluate(() => document.querySelector('[data-version]')?.click());
   console.log('UI smoke: version control clicked');
-  await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('No VISTA record was created'));
-  await page.click('[data-run]');
-  console.log('UI smoke: run control clicked');
-  await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('did not create a VISTA schematic result'), { timeout: 10000 });
+  await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('No VISTA record was created'), { timeout: 8000 });
+  await page.evaluate(() => document.querySelector('[data-run]')?.click());
+  console.log('UI smoke: schematic run clicked');
+  await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('Demo schematic result'), { timeout: 8000 });
+  await page.evaluate(() => document.querySelector('[data-submit]')?.click());
+  await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('Submission saved by VISTA'), { timeout: 8000 });
+  console.log('UI smoke: submission/result state verified (Demo fixture only)');
   await page.evaluate(() => [...document.querySelectorAll('button')].find((button) => button.textContent.includes('SO-101 Digital Twin'))?.click());
   console.log('UI smoke: twin entry clicked');
   await page.waitForSelector('.feature-assignment', { timeout: 10000 });
-  await page.click('.feature-assignment');
+  console.log('UI smoke: twin assignment picker loaded');
+  await page.evaluate(() => document.querySelector('.feature-assignment')?.click());
   await page.waitForFunction(() => document.querySelector('[data-twin-note]')?.textContent.includes('URDF/STL loaded'), { timeout: 20000 });
   await page.waitForFunction(() => document.querySelector('[data-connection]')?.textContent.includes('No eligible robot'), { timeout: 10000 });
   if (!(await page.$eval('[data-connect]', (button) => button.disabled))) throw new Error('Demo mode must not offer a live Twin connection without an authorized robot.');
-  await page.click('[data-reset-camera]');
-  await page.screenshot({ path: path.join(out, 'digital-twin-no-backend-access.png'), fullPage: true });
-  await page.click('[data-k="settings"]');
+  await page.evaluate(() => document.querySelector('[data-reset-camera]')?.click());
+  await page.evaluate(() => document.querySelector('[data-k="settings"]')?.click());
   await page.waitForSelector('#settings-twin-url');
   const settingsText = await page.$eval('.work-sheet', (el) => el.textContent);
   if (!settingsText.includes('Demo fixture') || !settingsText.includes('Phiên đăng nhập')) throw new Error('Settings did not show connection and session status.');

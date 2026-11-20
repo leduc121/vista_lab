@@ -14,6 +14,7 @@ const defaults = {
   // Operators must choose an environment explicitly. An unset release must
   // never silently connect a student to Production.
   educationApi: process.env.VISTA_EDUCATION_API || '',
+  deviceProvisioningEnabled: process.env.VISTA_DEVICE_PROVISIONING_ENABLED === 'true',
   supabaseUrl: process.env.VISTA_SUPABASE_URL || '',
   supabaseAnonKey: process.env.VISTA_SUPABASE_ANON_KEY || '',
   twinWsUrl: '',
@@ -127,6 +128,7 @@ app.whenReady().then(() => {
   registerHandle('cfg:get', () => ({
     mock: config.mock,
     educationApi: config.educationApi,
+    deviceProvisioningEnabled: config.deviceProvisioningEnabled,
     twinWsUrl: config.twinWsUrl,
     twinWsConfigurationError: config.twinWsConfigurationError,
     twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL),
@@ -176,6 +178,8 @@ app.whenReady().then(() => {
   });
   registerHandle('provisioning:status', () => deviceProvisioning.status());
   registerHandle('provisioning:create-key', () => { requireLocalSession(); return deviceProvisioning.createEnrollmentKey(); });
+  registerHandle('provisioning:enroll', async (enrollmentCode) => { requireLocalSession(); if (!config.deviceProvisioningEnabled) throw new Error('Device provisioning is disabled by operator policy.'); return deviceProvisioning.enroll(enrollmentCode); });
+  registerHandle('provisioning:refresh', async () => { requireLocalSession(); if (!config.deviceProvisioningEnabled) throw new Error('Device provisioning is disabled by operator policy.'); return deviceProvisioning.authenticate(); });
   registerHandle('edge:simulate', async (attemptId, command, confirmation) => {
     if (!client.getSession?.() && !config.mock) throw new Error('Sign in before running a lab simulation.');
     if (typeof attemptId !== 'string' || !attemptId || attemptId.length > 80) throw new Error('Invalid lab attempt.');

@@ -19,6 +19,7 @@
   const programs = new Map();
   const drafts = new Map();
   const versions = new Map();
+  const experiments = new Map();
   let config = { mock: true, rememberedUsername: '', persistentSession: false };
   let user = { id: 'demo-student', name: 'Nguyễn Minh · Demo', studentCode: 'HS-DEMO', className: '8A2 · Demo', schoolName: 'VISTA Demo' };
 
@@ -44,14 +45,23 @@
       versions.set(programId, [...list, v]); return v;
     },
     async programVersions(programId) { return versions.get(programId) || []; },
+    async createSchematicExperiment(attemptId, { programVersionId }) {
+      const experiment = { id: `demo-experiment-${experiments.size + 1}`, attemptId, programVersionId, status: 'pending', execution_mode: 'schematic' };
+      experiments.set(experiment.id, experiment); return experiment;
+    },
+    async runSchematic(experimentId) {
+      const experiment = experiments.get(experimentId);
+      if (!experiment) throw new Error('Demo experiment was not found.');
+      experiment.status = 'succeeded';
+      experiment.result = { mode: 'schematic', physicalMotion: false, message: 'Demo schematic result; no MuJoCo or backend execution occurred.' };
+      return experiment;
+    },
+    async experimentStatus(experimentId) { return experiments.get(experimentId) || { status: 'unavailable' }; },
+    async experimentResult(experimentId) { return experiments.get(experimentId)?.result || null; },
+    async experimentEvents() { return { items: [] }; },
     async digitalTwinAvailability() { return []; },
     async issueTwinViewerScope() { throw new Error('Digital Twin scope issuance requires the real Education API.'); },
     async submitAttempt() { return { status: 'submitted' }; },
-    async createSchematicExperiment() { throw new Error('Demo mode does not call the server schematic API.'); },
-    async runSchematic() { throw new Error('Demo mode does not call the server schematic API.'); },
-    async experimentStatus() { return { status: 'unavailable' }; },
-    async experimentEvents() { return { items: [] }; },
-    async experimentResult() { return null; },
     async physicalEligibility() { return { eligible: false, code: 'DEMO_ONLY', message: 'Browser fixture; physical execution is disabled.', readiness: { allocated: false, entitled: false, symbolicPassed: false, runtimeOnline: false, checkikReachable: false, runtimeStopped: true, estopActive: false, activeSession: false } }; },
     async activePhysicalExecution() { return null; },
     async preparePhysicalExecution() { throw new Error('Demo mode never allocates physical sessions.'); },

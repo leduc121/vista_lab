@@ -302,6 +302,18 @@ async function renderWorkspace(lab, requestedAttemptId) {
       try { Blockly.serialization.workspaces.load(initialState, ws); }
       catch (error) { ws.clear(); throw new Error(`Saved Blockly workspace could not be loaded: ${error.message}`); }
     } else addDefaultBlocks(ws, allowed);
+    const startBlock = ws.getTopBlocks(true).find((block) => block.type === 'robot_start');
+    if (startBlock && !startBlock.getNextBlock() && allowed.includes('arm.select')) {
+      const armBlock = ws.newBlock('robot_select_arm');
+      armBlock.setFieldValue('left', 'ARM');
+      startBlock.nextConnection.connect(armBlock.previousConnection);
+      armBlock.initSvg(); armBlock.render();
+      if (allowed.includes('gripper.open') || allowed.includes('gripper.close')) {
+        const actionBlock = ws.newBlock(allowed.includes('gripper.open') ? 'robot_gripper_open' : 'robot_gripper_close');
+        armBlock.getInput('DO').connection.connect(actionBlock.previousConnection);
+        actionBlock.initSvg(); actionBlock.render();
+      }
+    }
     let twinController = null;
     let twinReady;
     activeWorkspace = { dispose: () => { twinController?.dispose(); ws.dispose(); } };
@@ -360,8 +372,8 @@ async function renderWorkspace(lab, requestedAttemptId) {
     }
     const demoMode = (await bridge.getCfg()).mock;
     if (demoMode) {
-      runButton.textContent = 'Run local MuJoCo';
-      localRunButton.hidden = true;
+      runButton.textContent = 'Run Demo schematic';
+      localRunButton.hidden = false;
     }
     if (existingProgram) saveState.textContent = demoMode ? 'Saved in Demo fixture' : 'Saved to VISTA';
 
@@ -379,22 +391,27 @@ async function renderWorkspace(lab, requestedAttemptId) {
     sheet.querySelector('[data-save]').onclick = async () => {
       const result = check();
       if (!result.valid) return;
+      saveState.textContent = 'Preparing Blockly…';
       const payload = {
         title: assignment.title || lab.title,
         workspaceJson: Blockly.serialization.workspaces.save(ws),
         robotProgram: result.program
       };
+      saveState.textContent = 'Blockly ready · saving…';
       try {
-        saveState.textContent = 'Saving…'; error.hidden = true;
+        const saveButton = sheet.querySelector('[data-save]');
+        saveState.textContent = 'Saving…'; error.hidden = true; saveButton.disabled = true;
         programRecord = programRecord
           ? await call('updateProgram', programRecord.id, { workspaceJson: payload.workspaceJson, robotProgram: payload.robotProgram })
           : await call('createProgram', attempt.id, payload);
+        saveState.textContent = 'API saved · storing local draft…';
         saveState.textContent = demoMode ? 'Saved in Demo fixture' : 'Saved to VISTA';
         await bridge.saveDraft(attempt.id, { workspaceJson: payload.workspaceJson, updatedAt: new Date().toISOString(), dirty: false });
         check();
         renderBackendValidation(validationEl, programRecord.validation_result);
         await reloadVersions();
       } catch (e) { error.hidden = false; error.textContent = apiErrorMessage(e); saveState.textContent = 'Save failed'; }
+      finally { sheet.querySelector('[data-save]').disabled = false; }
     };
     versionButton.onclick = async () => {
       try {
@@ -461,7 +478,13 @@ async function renderWorkspace(lab, requestedAttemptId) {
       const resultEl = sheet.querySelector('[data-result]');
       runButton.disabled = true; resultEl.textContent = demoMode ? 'Running the clearly labeled local preview…' : 'Creating a server schematic experiment…';
       const program = generateCanonicalProgram(ws, assignment).program;
-      if (demoMode) { await runLocalMuJoCo(); return; }
+      if (demoMode) {
+        const demoExperiment = await call('createSchematicExperiment', attempt.id, { programVersionId: versionRecord.id, executionMode: 'schematic' });
+        const demoResult = await call('runSchematic', demoExperiment.id);
+        resultEl.textContent = `Demo schematic result: ${demoResult.status}. No backend, MuJoCo or physical execution occurred.`;
+        runButton.disabled = !versionRecord;
+        return;
+      }
       try {
         const experiment = await call('createSchematicExperiment', attempt.id, { programVersionId: versionRecord.id, executionMode: 'schematic' });
         const started = await call('runSchematic', experiment.id);

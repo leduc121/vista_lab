@@ -512,6 +512,7 @@ async function setupWizardView() {
   let robotStatus = null;
   let provisioning = null;
   let notice = '';
+  let enrollmentCode = '';
   const badge = (state) => h('span', { class: `setup-badge ${state === 'READY' ? 'ready' : ''}` }, state);
   const render = () => {
     if (view !== 'setup') return;
@@ -524,8 +525,8 @@ async function setupWizardView() {
       setupCard('Driver verification', driver('lerobot') === 'READY' && driver('pyserial') === 'READY' ? 'READY' : 'BLOCKED', `LeRobot ${driver('lerobot')} · pyserial ${driver('pyserial')}`),
       setupCard('Calibration readiness', robotStatus?.calibration || (robotStatus?.calibrated ? 'READY' : 'ACTION REQUIRED'), robotStatus?.connected ? 'Kết nối chỉ đọc. Không chạy quy trình hiệu chuẩn tại đây.' : 'Chưa kết nối. Hiệu chuẩn thủ công được thực hiện theo quy trình an toàn của phòng lab.'),
       setupCard('MuJoCo simulation', health.simulation?.available ? 'READY' : (driver('mujoco') === 'READY' ? 'ACTION REQUIRED' : 'BLOCKED'), health.simulation?.available ? `MuJoCo ${health.simulation.engine} · ${health.simulation.model} · mô hình sáu khớp đã xác thực.` : (health.simulation?.error || 'MuJoCo chưa có trong Edge Runtime này. Schematic không được xem là mô phỏng vật lý.')),
-      setupCard('Device provisioning', provisioning?.state === 'ACTIVE' ? 'READY' : (provisioning?.state === 'KEY_READY' ? 'NOT PROVISIONED' : 'NOT PROVISIONED'),
-        provisioning?.state === 'KEY_READY' ? `Khóa Ed25519 được mã hoá trong kho hệ điều hành · SHA-256 ${provisioning.fingerprint?.slice(0, 16) || 'n/a'}… Backend đăng ký chưa được cấu hình.` : 'Chưa có backend đăng ký thiết bị và cấp chứng thư.'),
+      setupCard('Device provisioning', provisioning?.state === 'ACTIVE' ? 'READY' : (provisioning?.state === 'KEY_READY' ? 'ACTION REQUIRED' : 'NOT PROVISIONED'),
+        provisioning?.state === 'ACTIVE' ? `Backend xác nhận ACTIVE · ${provisioning.deviceId} · SHA-256 ${provisioning.fingerprint?.slice(0, 16) || 'n/a'}…` : (provisioning?.state === 'KEY_READY' ? `Khóa Ed25519 được mã hoá trong kho hệ điều hành · SHA-256 ${provisioning.fingerprint?.slice(0, 16) || 'n/a'}… Nhập mã dùng một lần do quản trị viên VISTA cấp.` : 'Tạo khóa cục bộ, sau đó nhập mã enrollment dùng một lần do quản trị viên VISTA cấp.')),
       setupCard('MQTT connectivity', 'BLOCKED', 'Cần provisioning và chứng thư AWS IoT; không kết nối Production AWS.'),
       setupCard('Final readiness', robotStatus?.connected && robotStatus.calibrated ? 'SIMULATION ONLY' : 'SIMULATION ONLY', 'Chỉ simulation được phép. Chuyển động vật lý bị tắt trong driver.')
     );
@@ -558,13 +559,21 @@ async function setupWizardView() {
       catch (e) { notice = e.message; }
       render();
     } }, provisioning?.state === 'KEY_READY' ? 'Khóa enrollment đã tạo' : 'Tạo khóa enrollment cục bộ');
+    const enrollmentInput = h('input', { type: 'password', value: enrollmentCode, maxlength: '80', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Mã enrollment dùng một lần', placeholder: 'Mã dùng một lần từ quản trị viên VISTA', oninput: (event) => { enrollmentCode = event.target.value; } });
+    const enroll = h('button', { class: 'primary', disabled: provisioning?.state !== 'KEY_READY' || !provisioning?.backendAvailable || !provisioning?.enrollmentEnabled || !enrollmentCode.trim(), onclick: async () => {
+      enroll.disabled = true;
+      try { provisioning = await bridge.enrollDevice(enrollmentCode.trim()); enrollmentCode = ''; notice = 'Backend đã xác nhận thiết bị ACTIVE; khóa riêng tư chưa rời khỏi máy này.'; }
+      catch (error) { notice = `Enrollment thất bại: ${error.message}`; }
+      render();
+    } }, 'Đăng ký thiết bị với VISTA');
+    const refreshDevice = h('button', { class: 'ghost', disabled: provisioning?.state !== 'ACTIVE', onclick: async () => { try { provisioning = await bridge.refreshDeviceProvisioning(); notice = 'Đã xác minh trạng thái thiết bị và gửi heartbeat.'; } catch (error) { notice = `Không thể xác minh thiết bị: ${error.message}`; } render(); } }, 'Xác minh trạng thái / heartbeat');
     const controls = h('section', { class: 'detail-panel setup-controls', 'aria-label': 'Chẩn đoán thiết bị' },
       h('h2', {}, 'Chẩn đoán thiết bị'), refresh, selectModel, scan, selector, deviceId, connect, disconnect,
       h('p', { class: 'faint' }, `Kết nối hiện tại: ${robotStatus?.connected ? `${robotStatus.mode} · ${robotStatus.port}` : 'chưa kết nối'} · motionEnabled=false`));
     const provisioningControl = h('section', { class: 'detail-panel setup-controls', 'aria-label': 'Device provisioning' },
       h('h2', {}, 'Danh tính thiết bị'),
-      h('p', {}, provisioning?.storageAvailable ? 'Khóa riêng tư chỉ được lưu bằng mã hoá hệ điều hành. Tạo khóa chưa đăng ký thiết bị.' : 'Kho mã hoá hệ điều hành không khả dụng; không thể tạo khóa an toàn.'),
-      createKey);
+      h('p', {}, provisioning?.storageAvailable ? 'Khóa riêng tư chỉ được lưu bằng mã hoá hệ điều hành. Enrollment ký challenge Ed25519 của backend. Desktop không tạo chứng thư AWS IoT.' : 'Kho mã hoá hệ điều hành không khả dụng; không thể tạo khóa an toàn.'),
+      createKey, enrollmentInput, enroll, refreshDevice);
     sheetEl.replaceChildren(h('div', { class: 'sheet-container' },
       h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'Thiết lập thiết bị'), h('p', { class: 'view-subline' }, 'Kiểm tra theo từng bước; trạng thái luôn phản ánh runtime thực tế trên máy này.'))),
       h('div', { class: 'setup-summary' }, badge('SIMULATION ONLY'), ' Robot execution bị khoá; không có hiệu chuẩn tự động.'),
