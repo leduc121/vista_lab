@@ -6,9 +6,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const JOINTS = {
   shoulder_pan: { urdf: 'Rotation', lower: -1.91986, upper: 1.91986 },
   shoulder_lift: { urdf: 'Pitch', lower: -1.74533, upper: 1.74533 },
-  elbow_flex: { urdf: 'Elbow', lower: -1.74533, upper: 1.5708 },
+  elbow_flex: { urdf: 'Elbow', lower: -1.69, upper: 1.69 },
   wrist_flex: { urdf: 'Wrist_Pitch', lower: -1.65806, upper: 1.65806 },
-  wrist_roll: { urdf: 'Wrist_Roll', lower: -2.79253, upper: 2.79253 },
+  wrist_roll: { urdf: 'Wrist_Roll', lower: -2.7438473, upper: 2.8412063 },
   gripper: { urdf: 'Jaw', lower: -0.174533, upper: 1.74533 }
 };
 const JOINT_NAMES = Object.keys(JOINTS);
@@ -79,7 +79,7 @@ async function readMesh(filename) {
 
 export async function mountTwinViewer(host) {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color('#f2f1ed');
+  scene.background = new THREE.Color('#111718');
   const camera = new THREE.PerspectiveCamera(42, 1, 0.005, 100);
   camera.up.set(0, 0, 1);
   camera.position.set(0.7, -0.9, 0.65);
@@ -98,11 +98,11 @@ export async function mountTwinViewer(host) {
   const light = new THREE.DirectionalLight(0xffffff, 2.5);
   light.position.set(0.4, -0.5, 1.2);
   scene.add(light);
-  const grid = new THREE.GridHelper(1.4, 28, '#93a09e', '#deddd7');
+  const grid = new THREE.GridHelper(1.4, 28, '#526260', '#263131');
   grid.rotation.x = Math.PI / 2;
   grid.position.z = -0.006;
   scene.add(grid);
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.2), new THREE.MeshStandardMaterial({ color: '#e8e7e2', roughness: 0.9 }));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.2), new THREE.MeshStandardMaterial({ color: '#172021', roughness: 0.9 }));
   ground.position.z = -0.008;
   scene.add(ground);
   const axes = new THREE.AxesHelper(0.12);

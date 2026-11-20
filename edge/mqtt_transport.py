@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import ssl
@@ -16,7 +17,15 @@ DEVICE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_MESSAGE_BYTES = 64 * 1024
 MAX_TTL_SECONDS = 24 * 60 * 60
 FORBIDDEN_REALTIME_FIELDS = {"servo", "servos", "joints", "jointpositions", "jointsetpoints", "trajectory", "teleop", "velocity", "torque", "current", "motorcommands", "goalposition", "setpoint"}
-ALLOWED_STEPS = {"arm.select", "home", "gripper.open", "gripper.close", "wait"}
+ALLOWED_STEPS = {"arm.select", "home", "preview.move_xyz", "gripper.open", "gripper.close", "wait"}
+
+
+def _reason_value(reason_code: Any) -> int:
+    value = getattr(reason_code, "value", reason_code)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 1
 
 
 def _contains_realtime_control(value: Any) -> bool:
@@ -108,7 +117,7 @@ class MqttTransport:
         return {"connected": True, "host": self.host, "port": self.port, "deviceId": self.device_id}
 
     def _on_connect(self, client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
-        if int(reason_code) != 0:
+        if _reason_value(reason_code) != 0:
             self.last_error = f"MQTT broker rejected connection ({reason_code})."
             self.connected.clear()
             return
@@ -125,7 +134,7 @@ class MqttTransport:
     def _on_disconnect(self, client: Any, userdata: Any, disconnect_flags: Any, reason_code: Any, properties: Any = None) -> None:
         self.connected.clear()
         self._cancel_heartbeat()
-        if int(reason_code) != 0:
+        if _reason_value(reason_code) != 0:
             self.last_error = "MQTT connection lost; offline commands are not queued."
 
     def _ack(self, command_id: str, status: str, message: str = "") -> None:
@@ -220,13 +229,39 @@ class MqttTransport:
         if not isinstance(steps, list) or not 1 <= len(steps) <= 200:
             raise ValueError("Lab command must contain 1 to 200 allowed steps.")
         wait_total = 0
+        selected_arm = None
         for step in steps:
             if not isinstance(step, dict) or step.get("type") not in ALLOWED_STEPS:
                 raise ValueError("Lab command step is not supported.")
+            fields = {
+                "arm.select": {"type", "arm"}, "home": {"type", "arm"},
+                "preview.move_xyz": {"type", "mode", "frame", "arm", "position"},
+                "gripper.open": {"type"}, "gripper.close": {"type"}, "wait": {"type", "durationMs"}
+            }[step["type"]]
+            if set(step) - fields:
+                raise ValueError("Lab command step contains unsupported fields.")
             if step["type"] == "arm.select" and step.get("arm") not in {"left", "right"}:
                 raise ValueError("Arm selection is invalid.")
+            if step["type"] == "arm.select":
+                selected_arm = step["arm"]
             if step["type"] in {"home", "gripper.open", "gripper.close"} and step.get("arm") not in {None, "left", "right"}:
                 raise ValueError("Arm selection is invalid.")
+            if step["type"] in {"home", "preview.move_xyz", "gripper.open", "gripper.close"}:
+                if selected_arm is None:
+                    raise ValueError("Select an arm before movement or gripper commands.")
+                if step.get("arm") is not None and step.get("arm") != selected_arm:
+                    raise ValueError("Command arm does not match the selected arm.")
+            if step["type"] == "preview.move_xyz":
+                point = step.get("position")
+                if step.get("mode") != "learning_preview" or step.get("frame") != "learning_preview_v1":
+                    raise ValueError("XYZ movement must use the learning preview frame.")
+                if not isinstance(point, dict) or set(point) != {"x", "y", "z"}:
+                    raise ValueError("XYZ movement must contain x, y and z only.")
+                bounds = {"x": (0, 600), "y": (0, 400), "z": (10, 300)}
+                for axis, (low, high) in bounds.items():
+                    value = point[axis]
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
+                        raise ValueError(f"XYZ movement {axis} is outside the learning-preview bounds.")
             if step["type"] == "wait":
                 duration = step.get("durationMs")
                 if not isinstance(duration, int) or isinstance(duration, bool) or not 0 <= duration <= 5000:

@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - 'edge/**'
+      - 'models/**'
+      - 'renderer/assets/so101/**'
       - 'main.js'
       - 'preload.js'
       - 'edge-supervisor.js'
@@ -12,6 +14,7 @@ on:
       - 'renderer/app.js'
       - 'renderer/style.css'
       - 'tests/**'
+      - 'docs/desktop/**'
       - 'scripts/build-edge-runtime.py'
       - 'package.json'
       - 'requirements-edge.txt'

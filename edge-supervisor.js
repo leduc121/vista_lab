@@ -7,12 +7,13 @@ const crypto = require('node:crypto');
 const readline = require('node:readline');
 
 class EdgeSupervisor {
-  constructor({ app, platform = process.platform, spawnImpl = spawn, now = Date.now, logPath } = {}) {
+  constructor({ app, platform = process.platform, spawnImpl = spawn, now = Date.now, logPath, modelPath } = {}) {
     this.app = app;
     this.platform = platform;
     this.spawnImpl = spawnImpl;
     this.now = now;
     this.logPath = logPath;
+    this.modelPath = modelPath;
     this.child = null;
     this.pending = new Map();
     this.restarts = [];
@@ -36,7 +37,14 @@ class EdgeSupervisor {
     const command = this.command();
     if (!command) { this.startError = 'Bundled Edge Runtime executable is missing.'; return false; }
     try {
-      const child = this.spawnImpl(command.executable, command.args, { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      const bundledModel = this.app?.isPackaged && process.resourcesPath
+        ? path.join(process.resourcesPath, 'models', 'so101', 'scene.xml')
+        : path.join(__dirname, 'models', 'so101', 'scene.xml');
+      const child = this.spawnImpl(command.executable, command.args, {
+        shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, VISTA_SO101_MJCF: this.modelPath || bundledModel,
+          ...(!this.app?.isPackaged ? { PYTHONPATH: [__dirname, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) } : {}) }
+      });
       this.child = child;
       const lines = readline.createInterface({ input: child.stdout });
       lines.on('line', (line) => this.onLine(line));
@@ -58,6 +66,10 @@ class EdgeSupervisor {
     try { response = JSON.parse(line); } catch { this.log('protocol-error', 'Runtime returned invalid JSON.'); return; }
     const pending = this.pending.get(response?.id);
     if (!pending) return;
+    if (response.event === 'simulation.frame') {
+      try { pending.onEvent?.(response.data); } catch (error) { this.log('event-handler-error', error.message); }
+      return;
+    }
     clearTimeout(pending.timer);
     this.pending.delete(response.id);
     if (response.ok) pending.resolve(response.result);
@@ -81,7 +93,7 @@ class EdgeSupervisor {
     this.restartTimer = setTimeout(() => { this.restartTimer = null; this.start(); }, delay);
   }
 
-  request(method, params = {}, timeoutMs = 4000) {
+  request(method, params = {}, timeoutMs = 4000, onEvent = null) {
     if (!this.child && !this.start()) return Promise.reject(new Error(this.startError || 'Edge Runtime unavailable.'));
     const child = this.child;
     const id = crypto.randomUUID();
@@ -91,7 +103,7 @@ class EdgeSupervisor {
         reject(new Error('Edge Runtime request timed out.'));
         this.terminateChild(child);
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, onEvent });
       child.stdin.write(`${JSON.stringify({ id, method, params })}\n`, (error) => {
         if (!error) return;
         clearTimeout(timer); this.pending.delete(id); reject(new Error('Edge Runtime IPC write failed.'));
@@ -105,7 +117,8 @@ class EdgeSupervisor {
       const [health, status] = await Promise.all([this.request('health'), this.request('status')]);
       if (health.version !== '0.1.0') return { state: 'BLOCKED', error: `Unsupported Edge Runtime version ${health.version}.`, health, status, restartCount: this.restarts.length };
       const driversReady = Boolean(health.drivers?.lerobot && health.drivers?.pyserial);
-      return { state: driversReady ? 'READY' : 'ACTION REQUIRED', health, status, restartCount: this.restarts.length };
+      const simulationReady = Boolean(health.simulation?.available);
+      return { state: simulationReady ? 'READY' : 'ACTION REQUIRED', driversReady, simulationReady, health, status, restartCount: this.restarts.length };
     } catch (error) {
       return { state: this.child ? 'ACTION REQUIRED' : 'BLOCKED', error: error.message, restartCount: this.restarts.length };
     }

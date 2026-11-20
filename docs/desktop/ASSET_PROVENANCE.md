@@ -1,11 +1,13 @@
-# SO-101 viewer asset provenance
+# SO-101 model asset provenance
 
-Reviewed 2026-11-19. These are existing viewer assets in the Desktop checkout. The audit verified provenance evidence and hashes; it did not grant new redistribution rights.
+Reviewed 2026-11-20. Rights-cleared model files are vendored with their notices.
 
-| Asset | Desktop path | SHA-256 | Source/rights status |
-| --- | --- | --- | --- |
-| GLB used by Blockly illustration | `renderer/assets/SO-Arm101.glb` | `1e9141f4834b10009dad0849becf251abf057e04a1e6f47d7fd97d1c83573927` | The checked VISTA source provenance audit identifies a different GLB in the CHECKIK workspace and says that model's author/source/license are unresolved. This Desktop GLB is not hash-identical to that asset. Exact author, original URL, license and attribution terms remain unverified. |
-| Calibrated URDF | `renderer/assets/so101/urdf/so101_new_calib.urdf` | `443d38d756e01bac7d3455b24430047ddc6427105e0d3454b2003116f5f67236` | Byte-identical to the LeLab reference's URDF at commit `84b6251cec3471195dfa35119827fbd1da2a801e` and VISTA's existing web asset. |
-| 13 STL meshes | `renderer/assets/so101/meshes/*.stl` | See the existing VISTA service asset provenance record | Byte-identical to the referenced LeLab package and existing VISTA web assets. Its package metadata declares BSD, but no subtree license text is present; the source repository's Apache-2.0 license alone does not settle the CAD-derived mesh redistribution terms. |
+| Asset | Desktop path | Source and rights |
+| --- | --- | --- |
+| SO-101 MuJoCo model, scene and mesh assets | `models/so101/` | Copied from MuJoCo Menagerie `robotstudio_so101/` at source revision `98a70c569c4c1b6da467a20012f766ee1f8dc521`. The source README identifies the Robot Studio SO101 model, derives it from TheRobotStudio/SO-ARM100 revision `608122e9ac330a753735f2e18aee73338e9ac407`, and declares Apache-2.0. The upstream model LICENSE and README are included unchanged. |
+| SO-101 calibrated URDF and 13 STL meshes | `renderer/assets/so101/` | Copied from the VISTA Education web asset package. Its included `LICENSE` and `NOTICE.md` identify the upstream TheRobotStudio/SO-ARM100 Apache-2.0 license and note that meshes are unmodified while the URDF is adapted for the VISTA viewer. |
+| Previously used GLB | `renderer/assets/SO-Arm101.glb` | Excluded. Its author, source and redistribution license remain unverified. The viewer uses the licensed URDF/STL model instead. |
 
-Before public distribution, the asset owner must confirm rights for the GLB and mesh package and provide required license/attribution notices. Until then, AppImage, DEB, and NSIS are acceptance artifacts only; do not publish them. This is separate from Electron and JavaScript dependency licenses.
+The two licensed model packages retain their notices. This is separate from
+Electron and JavaScript dependency licenses. Release signing and installer
+acceptance remain independent release gates.

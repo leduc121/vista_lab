@@ -84,3 +84,34 @@ this sprint.
 - GitHub CLI authentication is currently invalid. Push verification cannot be
   completed until GitHub authentication is restored; no token was exposed or
   written to the project.
+
+## Completion sprint verification update — 2026-11-20
+
+This section supersedes conflicting older statements above; earlier release
+artifact checksums still describe prior builds, not the new ignored local
+artifacts.
+
+- `npm test`: 19 API and UI/runtime contract tests plus 3 Node test files passed
+  when run with the built Edge runtime selected. `npm run typecheck` passed.
+- Python 3.11 `edge/tests`: 15 tests passed, including MuJoCo simulation, runtime
+  protocol, fake MQTT validation, authorization, cancellation, and no-motion
+  checks.
+- `npm run build:renderer` passed. Local browser screenshot review rendered the
+  Blockly editor and SO-101 URDF/STL viewer at 1420×960. The complete
+  `npm run smoke` did not complete its navigation suite and is not claimed as
+  passed.
+- The native Linux x64 PyInstaller executable started and loaded the bundled
+  model. `npm run dist` produced a new AppImage; `npx electron-builder --linux
+  deb` produced a DEB. The artifacts remain ignored local build outputs and
+  were not installed or distributed. No clean-machine installation check was
+  performed.
+- Real local MQTT TLS integration against a temporary loopback Mosquitto broker
+  passed one authorized command/ACK plus telemetry publish/receive flow.
+  Backend provisioning and MQTT-to-Twin end-to-end integration remain
+  incomplete.
+- No isolated Education API, GoTrue/Supabase test identities, or device
+  enrollment/certificate contract were available. Live backend login,
+  submission persistence, revocation, and real provisioned MQTT were not
+  verified. No AWS endpoint or physical robot was accessed.
+- Windows NSIS and macOS DMG were not rebuilt or tested on their native
+  runners. The existing Windows artifact remains stale relative to this source.

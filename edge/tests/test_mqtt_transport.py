@@ -46,6 +46,12 @@ class MqttTransportTests(unittest.TestCase):
         self.mqtt_module = types.SimpleNamespace(CallbackAPIVersion=types.SimpleNamespace(VERSION2=2), MQTTv311=4)
         self.modules = {"paho": types.ModuleType("paho"), "paho.mqtt": types.ModuleType("paho.mqtt"), "paho.mqtt.client": self.mqtt_module}
 
+    @staticmethod
+    def command_steps(action="home"):
+        steps = [{"type": "arm.select", "arm": "left"}]
+        steps.append({"type": action, **({"arm": "left"} if action == "home" else {})})
+        return steps
+
     def tearDown(self):
         self.transport.disconnect()
         self.temp.cleanup()
@@ -60,7 +66,7 @@ class MqttTransportTests(unittest.TestCase):
         self.assertIsNotNone(self.transport.heartbeat_timer)
         now = int(time.time() * 1000)
         envelope = {"commandId": "command01", "issuedAt": now, "expiresAt": now + 30_000, "authorized": True,
-                    "command": {"id": "command01", "expiresAt": now + 30_000, "steps": [{"type": "gripper.open"}]}}
+                    "command": {"id": "command01", "expiresAt": now + 30_000, "steps": self.command_steps("gripper.open")}}
         message = types.SimpleNamespace(topic="vista/devices/lab-01/commands", payload=json.dumps(envelope).encode("utf-8"))
         self.transport._on_message(self.transport.client, None, message)
         self.assertEqual(self.executed, ["command01"])
@@ -72,10 +78,10 @@ class MqttTransportTests(unittest.TestCase):
             self.transport.connect()
         now = int(time.time() * 1000)
         expired = {"commandId": "expired1", "issuedAt": now - 90_000, "expiresAt": now - 1, "authorized": True,
-                   "command": {"id": "expired1", "expiresAt": now - 1, "steps": [{"type": "home"}]}}
+                   "command": {"id": "expired1", "expiresAt": now - 1, "steps": self.command_steps()}}
         self.transport._on_message(self.transport.client, None, types.SimpleNamespace(topic="vista/devices/lab-01/commands", payload=json.dumps(expired).encode()))
         denied = {"commandId": "denied001", "issuedAt": now, "expiresAt": now + 30_000, "authorized": False,
-                  "command": {"id": "denied001", "expiresAt": now + 30_000, "steps": [{"type": "home"}]}}
+                  "command": {"id": "denied001", "expiresAt": now + 30_000, "steps": self.command_steps()}}
         message = types.SimpleNamespace(topic="vista/devices/lab-01/commands", payload=json.dumps(denied).encode())
         self.transport._on_message(self.transport.client, None, message)
         self.transport._on_message(self.transport.client, None, message)
@@ -87,7 +93,7 @@ class MqttTransportTests(unittest.TestCase):
             self.transport.connect()
         now = int(time.time() * 1000)
         envelope = {"commandId": "persisted1", "issuedAt": now, "expiresAt": now + 30_000, "authorized": True,
-                    "command": {"id": "persisted1", "expiresAt": now + 30_000, "steps": [{"type": "home"}]}}
+                    "command": {"id": "persisted1", "expiresAt": now + 30_000, "steps": self.command_steps()}}
         message = types.SimpleNamespace(topic="vista/devices/lab-01/commands", payload=json.dumps(envelope).encode())
         self.transport._on_message(self.transport.client, None, message)
         restarted = MqttTransport(host="example-ats.iot.test", device_id="lab-01",
@@ -106,7 +112,7 @@ class MqttTransportTests(unittest.TestCase):
             self.transport.connect()
         now = int(time.time() * 1000)
         retained = {"commandId": "retained1", "issuedAt": now, "expiresAt": now + 30_000, "authorized": True,
-                    "command": {"id": "retained1", "expiresAt": now + 30_000, "steps": [{"type": "home"}]}}
+                    "command": {"id": "retained1", "expiresAt": now + 30_000, "steps": self.command_steps()}}
         message = types.SimpleNamespace(topic="vista/devices/lab-01/commands", retain=True, payload=json.dumps(retained).encode())
         self.transport._on_message(self.transport.client, None, message)
         self.assertEqual(self.executed, [])
@@ -118,7 +124,7 @@ class MqttTransportTests(unittest.TestCase):
         now = int(time.time() * 1000)
         command = {"commandId": "servocmd1", "issuedAt": now, "expiresAt": now + 30_000,
                    "authorized": True, "command": {"id": "servocmd1", "expiresAt": now + 30_000,
-                   "steps": [{"type": "home"}]}, "joint_setpoints": [0, 1, 2]}
+                   "steps": self.command_steps()}, "joint_setpoints": [0, 1, 2]}
         message = types.SimpleNamespace(topic="vista/devices/lab-01/commands", payload=json.dumps(command).encode())
         self.transport._on_message(self.transport.client, None, message)
         self.assertEqual(self.executed, [])

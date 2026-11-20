@@ -12,7 +12,7 @@
     "test:integration": "node scripts/integration-acceptance.cjs",
     "smoke": "npm run build:renderer && node scripts/desktop-smoke.cjs",
     "start": "npm run build:renderer && node scripts/start-electron.cjs",
-    "build:edge-runtime": "python3 scripts/build-edge-runtime.py",
+    "build:edge-runtime": "node scripts/run-edge-build.cjs",
     "dist": "npm run build:edge-runtime && npm run build:renderer && electron-builder --linux AppImage deb",
     "dist:win": "npm run build:edge-runtime && npm run build:renderer && electron-builder --win nsis",
     "dist:mac": "npm run build:edge-runtime && npm run build:renderer && electron-builder --mac dmg"
@@ -75,7 +75,8 @@
       "!.agents/**"
     ],
     "extraResources": [
-      { "from": "edge/dist/vista-edge-runtime", "to": "edge-runtime" }
+      { "from": "edge/dist/vista-edge-runtime", "to": "edge-runtime" },
+      { "from": "models/so101", "to": "models/so101" }
     ]
   },
   "dependencies": {

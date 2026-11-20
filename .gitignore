@@ -56,9 +56,8 @@ checkIk/
 .claude/
 skills-lock.json
 
-# SO-101 model/CAD files have unresolved redistribution terms; see provenance doc.
+# Legacy SO-101 GLB has unresolved redistribution terms; see provenance doc.
 renderer/assets/SO-Arm101.glb
-renderer/assets/so101/
 
 # OS/editor files
 .DS_Store

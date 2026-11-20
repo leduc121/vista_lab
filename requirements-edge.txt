@@ -1,7 +1,6 @@
-# Native CI runners build this runtime independently for each operating system with Python 3.11.x.
-lerobot[feetech]==0.6.2
-numpy>=2.0,<2.3
+# Native Edge Runtime dependencies. Physical LeRobot support remains optional;
+# the packaged default is local simulation and read-only hardware stays gated.
+mujoco==3.17.0
+paho-mqtt==2.2.0
 pyserial==3.5
-mujoco>=3.2,<4
-paho-mqtt>=2.1,<3
-pyinstaller>=6.10,<7
+pyinstaller==6.19.0

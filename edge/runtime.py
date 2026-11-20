@@ -13,6 +13,7 @@ import threading
 import time
 import math
 from typing import Any, Protocol
+from edge.mujoco_simulation import MuJoCoSimulation
 
 RUNTIME_VERSION = "0.1.0"
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
@@ -154,10 +155,11 @@ class EdgeRuntime:
     def __init__(self, *, simulated: Adapter | None = None, physical: Adapter | None = None) -> None:
         self.simulated = simulated or SimulatedSO101()
         self.physical = physical or LeRobotSO101Adapter()
+        self.mujoco = MuJoCoSimulation()
         self.active = "SIMULATION"
         self._stop = threading.Event()
 
-    def handle(self, message: dict[str, Any]) -> dict[str, Any]:
+    def handle(self, message: dict[str, Any], on_event=None) -> dict[str, Any]:
         request_id = message.get("id")
         method = message.get("method")
         params = message.get("params") or {}
@@ -167,10 +169,29 @@ class EdgeRuntime:
             return {"version": RUNTIME_VERSION, "python": platform.python_version(), "state": "READY", "mode": self.active,
                     "drivers": {"lerobot": importlib.util.find_spec("lerobot") is not None,
                                 "pyserial": importlib.util.find_spec("serial") is not None,
-                                "mujoco": importlib.util.find_spec("mujoco") is not None}}
+                                "mujoco": importlib.util.find_spec("mujoco") is not None},
+                    "simulation": self.mujoco.status()}
         if method == "status":
-            return {"activeMode": self.active, "simulation": self.simulated.status(), "physical": self.physical.status(),
+            return {"activeMode": self.active, "simulation": self.mujoco.status(), "robotSimulation": self.simulated.status(), "physical": self.physical.status(),
                     "motionEnabled": False}
+        if method == "simulate":
+            return self.mujoco.execute(params.get("command"), params.get("authorization"),
+                                       params.get("attempt"), params.get("confirmation"), on_event)
+        if method == "cancel_simulation":
+            self.mujoco.cancel()
+            return {"cancelled": True, "motionEnabled": False}
+        if method == "pause_simulation":
+            self.mujoco.pause()
+            return {"paused": True, "motionEnabled": False}
+        if method == "resume_simulation":
+            self.mujoco.resume()
+            return {"paused": False, "motionEnabled": False}
+        if method == "load_model":
+            candidate = MuJoCoSimulation(params.get("path"))
+            if not candidate.available:
+                raise ValueError(candidate.error or "Selected MuJoCo model is unavailable.")
+            self.mujoco = candidate
+            return self.mujoco.status()
         if method == "ports":
             return {"items": self.physical.ports()}
         if method == "connect":
@@ -204,6 +225,23 @@ class EdgeRuntime:
 def serve(runtime: EdgeRuntime | None = None, reader=sys.stdin, writer=sys.stdout) -> None:
     runtime = runtime or EdgeRuntime()
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    output_lock = threading.Lock()
+    simulation_threads: set[threading.Thread] = set()
+
+    def write(payload: dict[str, Any]) -> None:
+        with output_lock:
+            writer.write(json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n")
+            writer.flush()
+
+    def run_simulation(message: dict[str, Any]) -> None:
+        request_id = message.get("id")
+        try:
+            result = runtime.handle(message, on_event=lambda frame: write({"id": request_id, "event": "simulation.frame", "data": frame}))
+            write({"id": request_id, "ok": True, "result": result})
+        except Exception as error:
+            logger.warning("simulation request failed: %s", type(error).__name__)
+            write({"id": request_id, "ok": False, "error": str(error)[:300]})
+
     try:
         for line in reader:
             if len(line) > 1_000_000:
@@ -214,18 +252,25 @@ def serve(runtime: EdgeRuntime | None = None, reader=sys.stdin, writer=sys.stdou
                 if not isinstance(message, dict):
                     raise ValueError("Request must be a JSON object.")
                 request_id = message.get("id")
+                if message.get("method") == "simulate":
+                    thread = threading.Thread(target=run_simulation, args=(message,), daemon=True)
+                    simulation_threads.add(thread)
+                    thread.start()
+                    continue
                 result = runtime.handle(message)
                 response = {"id": request_id, "ok": True, "result": result}
             except Exception as error:
                 logger.warning("request failed: %s", type(error).__name__)
                 response = {"id": message.get("id") if isinstance(message, dict) else None,
                             "ok": False, "error": str(error)[:300]}
-            writer.write(json.dumps(response, separators=(",", ":"), allow_nan=False) + "\n")
-            writer.flush()
+            write(response)
             if runtime._stop.is_set():
                 break
     finally:
+        runtime.mujoco.cancel()
         runtime.close()
+        for thread in simulation_threads:
+            thread.join(timeout=3)
 
 
 if __name__ == "__main__":

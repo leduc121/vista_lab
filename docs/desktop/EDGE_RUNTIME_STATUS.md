@@ -55,3 +55,32 @@
   bundled runtime and is not a current release candidate.
 
 See `CHECKIK_REUSE.md` and `BACKEND_HANDOFF.md` for reuse scope and server needs.
+
+## Completion sprint update — 2026-11-20
+
+The status above is historical where it conflicts with this update:
+
+- A real MuJoCo SO-101 six-joint MJCF model and Apache-2.0 notices are vendored
+  under `models/so101/`; the calibrated URDF/STL viewer asset is under
+  `renderer/assets/so101/`. The legacy GLB remains excluded.
+- Blockly's allowlisted program now runs through the Edge process in MuJoCo,
+  emits six measured joint values and end-effector position, and supports
+  progress, speed, pause, resume and cancel. Motion remains simulation only.
+- The Python runtime and model tests passed locally (15 tests total across
+  `edge/tests`). The built Linux x64 PyInstaller executable started, loaded
+  MuJoCo 3.17 and the bundled scene, answered health, and shut down cleanly.
+- A temporary loopback-only Mosquitto broker with mutual TLS accepted an
+  authorized allowlisted message, emitted its ACK, and delivered telemetry.
+  Fake-client tests plus this one real-broker pass succeeded; the MQTT module
+  is not wired to backend-issued identities or the Education/Twin stream.
+- The UI theme is darkened and model selection is available through
+  Setup Wizard. Screenshot checks rendered the Blockly editor and URDF/STL
+  viewer at desktop size. The full browser smoke did not finish its navigation
+  suite and is not counted as passed.
+- Linux x64 AppImage and DEB packaging were built from this source. This does
+  not verify installation, runtime on a clean machine, or release signing.
+  Windows and macOS native jobs have not run in this sprint.
+- Live Education API/Supabase workflow and device enrollment remain blocked by
+  the absence of an isolated local API, disposable student identities, and
+  enrollment/certificate endpoints. No AWS, remote API or physical robot was
+  accessed.

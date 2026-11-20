@@ -523,7 +523,7 @@ async function setupWizardView() {
       setupCard('Robot discovery', ports.length ? 'ACTION REQUIRED' : (runtimeState === 'READY' ? 'ACTION REQUIRED' : 'BLOCKED'), ports.length ? `${ports.length} cổng serial được phát hiện; cần chọn chính xác một cổng.` : (runtimeState === 'READY' ? 'Không tìm thấy cổng serial.' : 'Runtime chưa sẵn sàng để quét thiết bị.')),
       setupCard('Driver verification', driver('lerobot') === 'READY' && driver('pyserial') === 'READY' ? 'READY' : 'BLOCKED', `LeRobot ${driver('lerobot')} · pyserial ${driver('pyserial')}`),
       setupCard('Calibration readiness', robotStatus?.calibration || (robotStatus?.calibrated ? 'READY' : 'ACTION REQUIRED'), robotStatus?.connected ? 'Kết nối chỉ đọc. Không chạy quy trình hiệu chuẩn tại đây.' : 'Chưa kết nối. Hiệu chuẩn thủ công được thực hiện theo quy trình an toàn của phòng lab.'),
-      setupCard('MuJoCo simulation', driver('mujoco') === 'READY' ? 'ACTION REQUIRED' : 'BLOCKED', driver('mujoco') === 'READY' ? 'MuJoCo có trong runtime; mô hình SO-101 chưa được xác minh trong bản dựng này.' : 'MuJoCo chưa có trong Edge Runtime này. Schematic không được xem là mô phỏng vật lý.'),
+      setupCard('MuJoCo simulation', health.simulation?.available ? 'READY' : (driver('mujoco') === 'READY' ? 'ACTION REQUIRED' : 'BLOCKED'), health.simulation?.available ? `MuJoCo ${health.simulation.engine} · ${health.simulation.model} · mô hình sáu khớp đã xác thực.` : (health.simulation?.error || 'MuJoCo chưa có trong Edge Runtime này. Schematic không được xem là mô phỏng vật lý.')),
       setupCard('Device provisioning', provisioning?.state === 'ACTIVE' ? 'READY' : (provisioning?.state === 'KEY_READY' ? 'NOT PROVISIONED' : 'NOT PROVISIONED'),
         provisioning?.state === 'KEY_READY' ? `Khóa Ed25519 được mã hoá trong kho hệ điều hành · SHA-256 ${provisioning.fingerprint?.slice(0, 16) || 'n/a'}… Backend đăng ký chưa được cấu hình.` : 'Chưa có backend đăng ký thiết bị và cấp chứng thư.'),
       setupCard('MQTT connectivity', 'BLOCKED', 'Cần provisioning và chứng thư AWS IoT; không kết nối Production AWS.'),
@@ -535,6 +535,13 @@ async function setupWizardView() {
       ...ports.map((port) => h('option', { value: port.path }, `${port.path} · ${port.description}${port.likelyRobot ? ' · có thể là robot' : ''}`)));
     const deviceId = h('input', { type: 'text', value: 'lab-so101', maxlength: '64', 'aria-label': 'Robot ID' });
     const refresh = h('button', { class: 'ghost', onclick: refreshAll }, 'Làm mới kiểm tra');
+    const selectModel = h('button', { class: 'ghost', onclick: async () => {
+      try {
+        const selected = await bridge.selectMuJoCoModel();
+        if (!selected.canceled) notice = `Đã tải và xác thực mô hình MuJoCo ${selected.model}.`;
+        await refreshAll();
+      } catch (e) { notice = `Không thể tải mô hình MuJoCo: ${e.message}`; render(); }
+    } }, 'Chọn mô hình MuJoCo trên máy này');
     const scan = h('button', { class: 'ghost', onclick: async () => { try { const result = await bridge.edgePorts(); ports = result.items || []; notice = `Đã tìm thấy ${ports.length} thiết bị serial.`; } catch (e) { notice = e.message; } render(); } }, 'Quét cổng serial');
     const connect = h('button', { class: 'primary', disabled: !ports.length || robotStatus?.connected, onclick: async () => {
       if (!selector.value) { notice = 'Hãy chọn cổng serial cụ thể.'; render(); return; }
@@ -552,7 +559,7 @@ async function setupWizardView() {
       render();
     } }, provisioning?.state === 'KEY_READY' ? 'Khóa enrollment đã tạo' : 'Tạo khóa enrollment cục bộ');
     const controls = h('section', { class: 'detail-panel setup-controls', 'aria-label': 'Chẩn đoán thiết bị' },
-      h('h2', {}, 'Chẩn đoán thiết bị'), refresh, scan, selector, deviceId, connect, disconnect,
+      h('h2', {}, 'Chẩn đoán thiết bị'), refresh, selectModel, scan, selector, deviceId, connect, disconnect,
       h('p', { class: 'faint' }, `Kết nối hiện tại: ${robotStatus?.connected ? `${robotStatus.mode} · ${robotStatus.port}` : 'chưa kết nối'} · motionEnabled=false`));
     const provisioningControl = h('section', { class: 'detail-panel setup-controls', 'aria-label': 'Device provisioning' },
       h('h2', {}, 'Danh tính thiết bị'),

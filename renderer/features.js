@@ -1,7 +1,5 @@
 import * as Blockly from 'blockly';
 import 'blockly/blocks';
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mountTwinViewer, parseTwinFrame } from './twin-viewer.js';
 import './features.css';
 
@@ -19,7 +17,6 @@ const blockLabels = {
   wait: 'Wait', 'gripper.open': 'Open gripper', 'gripper.close': 'Close gripper'
 };
 const palette = { start: '#2B2F35', movement: '#0F7A6E', gripper: '#A86A12', timing: '#5B6573', control: '#4C5C9E' };
-const models = new WeakMap();
 let activeWorkspace = null;
 let activeTwin = null;
 
@@ -30,7 +27,7 @@ Blockly.common.defineBlocksWithJsonArray([
   { type: 'robot_move_to', message0: 'move to x %1 y %2 z %3 mm', args0: [{ type: 'field_number', name: 'X', value: 240, min: 0, max: 600, precision: 1 }, { type: 'field_number', name: 'Y', value: 220, min: 0, max: 400, precision: 1 }, { type: 'field_number', name: 'Z', value: 120, min: 10, max: 300, precision: 1 }], previousStatement: null, nextStatement: null, style: 'movement_blocks', tooltip: 'Moves only in the backend learning preview coordinate frame.' },
   { type: 'robot_gripper_open', message0: 'open gripper', previousStatement: null, nextStatement: null, style: 'gripper_blocks' },
   { type: 'robot_gripper_close', message0: 'close gripper', previousStatement: null, nextStatement: null, style: 'gripper_blocks' },
-  { type: 'robot_wait', message0: 'wait %1 seconds', args0: [{ type: 'field_number', name: 'SECONDS', value: 1, min: 0, max: 60, precision: 0.1 }], previousStatement: null, nextStatement: null, style: 'timing_blocks' }
+  { type: 'robot_wait', message0: 'wait %1 seconds', args0: [{ type: 'field_number', name: 'SECONDS', value: 1, min: 0, max: 5, precision: 0.1 }], previousStatement: null, nextStatement: null, style: 'timing_blocks' }
 ]);
 
 const toolbox = (actions) => ({
@@ -217,6 +214,7 @@ function generateCanonicalProgram(workspace, assignment) {
   });
   if (!steps.length) problems.push('Add at least one supported action below the start block.');
   if (steps.length > 200) problems.push('A program may contain at most 200 actions.');
+  if (steps.filter((step) => step.type === 'wait').reduce((total, step) => total + step.durationMs, 0) > 15000) problems.push('A program may wait for at most 15 seconds in total.');
   return { valid: problems.length === 0, problems: [...new Set(problems)], program: { kind: 'robot_program', schemaVersion: 1, steps }, selectedArm };
 }
 
@@ -288,10 +286,10 @@ async function renderWorkspace(lab, requestedAttemptId) {
     sheet.innerHTML = `
       <div class="sheet-container feature-workspace-page">
         <div class="feature-title-row"><div><div class="eyebrow">PRACTICE WORKSPACE · ${escapeHtml(assignment.course_title || lab.courseTitle)}</div><h1>${escapeHtml(assignment.title || lab.title)}</h1><p class="view-subline">${escapeHtml(assignment.instructions || lab.instructions || '')}</p></div><span class="mode-label">SIMULATION · physical locked</span></div>
-        <div class="feature-toolbar"><span class="save-state" data-save-state>Draft local</span><button class="ghost" data-validate>Validate</button><button class="ghost" data-save>Save program</button><button class="ghost" data-version disabled>Create version</button><button class="ghost" data-run-local disabled>Run local simulation</button><button class="primary-action" data-run disabled>Run VISTA schematic</button><button class="ghost" data-submit disabled>Submit version</button></div>
+        <div class="feature-toolbar"><span class="save-state" data-save-state>Draft local</span><button class="ghost" data-undo aria-label="Undo">Undo</button><button class="ghost" data-redo aria-label="Redo">Redo</button><button class="ghost" data-reset-workspace>Reset</button><button class="ghost" data-validate>Validate</button><button class="ghost" data-save>Save program</button><button class="ghost" data-version disabled>Create version</button><button class="ghost" data-run-local disabled>Run local MuJoCo</button><button class="primary-action" data-run disabled>Run VISTA schematic</button><button class="ghost" data-submit disabled>Submit version</button></div>
         <div class="version-toolbar"><label for="saved-program-version">Saved versions</label><select id="saved-program-version" data-version-picker disabled><option value="">No saved versions</option></select><button class="ghost" data-restore-version disabled>Restore into workspace</button></div>
         <div class="feature-error" role="alert" data-error hidden></div>
-        <div class="feature-grid"><section class="feature-blockly" aria-label="VISTA Blockly programming workspace"><div data-blockly></div></section><aside class="feature-side"><section class="feature-panel"><div class="panel-heading"><h2>SO-101 Digital Twin</h2><span class="mode-label">SIMULATION</span></div><div class="twin-viewport" data-twin-canvas></div><div class="joint-state" data-joints></div><div class="telemetry-note">Simulated joint state · local preview only</div></section><section class="feature-panel"><h2>Validation & execution</h2><div data-validation class="validation-state">Validate the workspace before saving.</div><div class="schematic-result" data-result>Server schematic result will appear here after a version is saved.</div></section></aside></div>
+        <div class="feature-grid"><section class="feature-blockly" aria-label="VISTA Blockly programming workspace"><div data-blockly></div></section><aside class="feature-side"><section class="feature-panel"><div class="panel-heading"><h2>SO-101 Digital Twin</h2><div class="simulation-controls"><label>Speed <select data-simulation-speed aria-label="Simulation speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label><button class="ghost" data-simulation-pause disabled>Pause</button><button class="ghost" data-simulation-resume disabled>Resume</button><button class="ghost" data-simulation-stop disabled>Stop</button><button class="ghost" data-camera-reset>Reset view</button></div></div><div class="twin-viewport" data-twin-canvas></div><progress class="simulation-progress" max="100" value="0" data-simulation-progress aria-label="MuJoCo simulation progress"></progress><div class="joint-state" data-joints></div><div class="telemetry-note" data-simulation-status aria-live="polite">MuJoCo model · waiting for a run</div></section><section class="feature-panel"><h2>Validation & execution</h2><div data-validation class="validation-state">Validate the workspace before saving.</div><pre class="command-preview" data-command-preview aria-label="Allowlisted simulation command preview">Run Validate to inspect the allowed command sequence.</pre><div class="schematic-result" data-result>VISTA schematic result will appear here after a version is saved.</div></section></aside></div>
       </div>`;
     const host = sheet.querySelector('[data-blockly]');
     const allowed = assignment.allowed_blocks || [];
@@ -304,7 +302,9 @@ async function renderWorkspace(lab, requestedAttemptId) {
       try { Blockly.serialization.workspaces.load(initialState, ws); }
       catch (error) { ws.clear(); throw new Error(`Saved Blockly workspace could not be loaded: ${error.message}`); }
     } else addDefaultBlocks(ws, allowed);
-    activeWorkspace = { dispose: () => ws.dispose() };
+    let twinController = null;
+    let twinReady;
+    activeWorkspace = { dispose: () => { twinController?.dispose(); ws.dispose(); } };
     const validationEl = sheet.querySelector('[data-validation]');
     const saveState = sheet.querySelector('[data-save-state]');
     const error = sheet.querySelector('[data-error]');
@@ -312,6 +312,14 @@ async function renderWorkspace(lab, requestedAttemptId) {
     const runButton = sheet.querySelector('[data-run]');
     const localRunButton = sheet.querySelector('[data-run-local]');
     const submitButton = sheet.querySelector('[data-submit]');
+    const cameraButton = sheet.querySelector('[data-camera-reset]');
+    const pauseButton = sheet.querySelector('[data-simulation-pause]');
+    const resumeButton = sheet.querySelector('[data-simulation-resume]');
+    const cancelButton = sheet.querySelector('[data-simulation-stop]');
+    const progress = sheet.querySelector('[data-simulation-progress]');
+    const simulationStatus = sheet.querySelector('[data-simulation-status]');
+    let localRunActive = false;
+    let localRunPaused = false;
     let programRecord = existingProgram;
     let versionRecord = null;
     let versions = [];
@@ -327,9 +335,12 @@ async function renderWorkspace(lab, requestedAttemptId) {
       renderProblemList(validationEl, result);
       renderBackendValidation(validationEl, programRecord?.validation_result);
       versionButton.disabled = !editable || !result.valid || !programRecord;
-      runButton.disabled = !editable || !result.valid || !versionRecord;
-      localRunButton.disabled = !editable || !result.valid || !versionRecord;
-      submitButton.disabled = !editable || !versionRecord;
+      runButton.disabled = !editable || !result.valid || !versionRecord || localRunActive;
+      localRunButton.disabled = !editable || !result.valid || !versionRecord || localRunActive;
+      submitButton.disabled = !editable || !versionRecord || localRunActive;
+      sheet.querySelector('[data-command-preview]').textContent = result.valid
+        ? result.program.steps.map((step, index) => `${String(index + 1).padStart(2, '0')}  ${step.type}${step.position ? `  ${step.position.x}, ${step.position.y}, ${step.position.z} mm` : ''}${step.durationMs !== undefined ? `  ${step.durationMs} ms` : ''}`).join('\n')
+        : 'Fix validation issues to preview the allowlisted command sequence.';
       return result;
     };
     ws.addChangeListener((event) => {
@@ -348,9 +359,23 @@ async function renderWorkspace(lab, requestedAttemptId) {
       }
     }
     const demoMode = (await bridge.getCfg()).mock;
+    if (demoMode) {
+      runButton.textContent = 'Run local MuJoCo';
+      localRunButton.hidden = true;
+    }
     if (existingProgram) saveState.textContent = demoMode ? 'Saved in Demo fixture' : 'Saved to VISTA';
 
     sheet.querySelector('[data-validate]').onclick = () => check();
+    sheet.querySelector('[data-undo]').onclick = () => ws.undo(false);
+    sheet.querySelector('[data-redo]').onclick = () => ws.undo(true);
+    sheet.querySelector('[data-reset-workspace]').onclick = () => {
+      if (!window.confirm('Reset this Blockly workspace to the starter program? The local draft will be replaced.')) return;
+      ws.clear(); addDefaultBlocks(ws, allowed); check();
+    };
+    sheet.addEventListener('keydown', (event) => {
+      if (!(event.ctrlKey || event.metaKey) || !['z', 'y'].includes(event.key.toLowerCase())) return;
+      event.preventDefault(); ws.undo(event.key.toLowerCase() === 'y' || event.shiftKey);
+    });
     sheet.querySelector('[data-save]').onclick = async () => {
       const result = check();
       if (!result.valid) return;
@@ -400,31 +425,43 @@ async function renderWorkspace(lab, requestedAttemptId) {
       check();
       renderBackendValidation(validationEl, chosen.validation_result);
     };
-    localRunButton.onclick = async () => {
+    const runLocalMuJoCo = async () => {
       const result = check();
       if (!versionRecord || !result.valid) return;
-      if (!window.confirm('Run this program on the local SIMULATION adapter? No physical robot will be controlled.')) return;
+      if (!window.confirm('Run this allowlisted program on the local MuJoCo SO-101 model? No physical robot will be controlled.')) return;
       const resultEl = sheet.querySelector('[data-result]');
-      localRunButton.disabled = true; error.hidden = true; resultEl.textContent = 'Checking this lab attempt and running locally…';
+      localRunActive = true; localRunPaused = false; check(); error.hidden = true; resultEl.textContent = 'Checking this lab attempt and starting the local MuJoCo simulation…';
+      pauseButton.disabled = false; resumeButton.disabled = true; cancelButton.disabled = false; progress.value = 0;
+      const stopProgress = bridge.onSimulationFrame((frame) => {
+        if (frame?.source_mode !== 'SIMULATION') return;
+        progress.value = Math.round(Number(frame.progress || 0) * 100);
+        simulationStatus.textContent = `MuJoCo · ${frame.step || 'Running'} · ${progress.value}% · latency ${frame.latency_ms ?? 0} ms`;
+        if (twinController) twinController.setFrame(frame);
+      });
       try {
+        await twinReady;
         const run = await bridge.runSimulation(attempt.id, {
-          id: crypto.randomUUID(), expiresAt: Date.now() + 15000, steps: result.program.steps
+          id: crypto.randomUUID(), expiresAt: Date.now() + 4 * 60_000,
+          speed: Number(sheet.querySelector('[data-simulation-speed]').value), steps: result.program.steps
         }, 'RUN_SIMULATION');
-        resultEl.textContent = `Local Edge Runtime acknowledged ${run.commandId} · ${run.mode}. This was simulated; no physical robot was connected.`;
-      } catch (e) { error.hidden = false; error.textContent = `Local simulation: ${apiErrorMessage(e)}`; resultEl.textContent = 'No simulation execution was confirmed.'; }
-      localRunButton.disabled = !versionRecord;
+        progress.value = 100;
+        simulationStatus.textContent = `MuJoCo · ${run.model} · complete · simulation only`;
+        resultEl.textContent = `MuJoCo simulated ${run.stepsCompleted} validated steps using ${run.model}. Joint telemetry was read from the physics engine. Physical motion is disabled.`;
+      } catch (e) { error.hidden = false; error.textContent = `Local MuJoCo simulation: ${apiErrorMessage(e)}`; resultEl.textContent = 'No MuJoCo execution was confirmed.'; simulationStatus.textContent = e.message.includes('cancelled') ? 'MuJoCo simulation stopped' : 'MuJoCo simulation failed'; }
+      finally { stopProgress(); localRunActive = false; localRunPaused = false; pauseButton.disabled = true; resumeButton.disabled = true; cancelButton.disabled = true; check(); }
     };
+    localRunButton.onclick = runLocalMuJoCo;
+    runButton.onclick = null;
+    pauseButton.onclick = async () => { try { await bridge.pauseSimulation(); localRunPaused = true; pauseButton.disabled = true; resumeButton.disabled = false; simulationStatus.textContent = 'MuJoCo simulation paused'; } catch (e) { error.hidden = false; error.textContent = e.message; } };
+    resumeButton.onclick = async () => { try { await bridge.resumeSimulation(); localRunPaused = false; pauseButton.disabled = false; resumeButton.disabled = true; } catch (e) { error.hidden = false; error.textContent = e.message; } };
+    cancelButton.onclick = async () => { try { await bridge.cancelSimulation(); simulationStatus.textContent = 'Stopping MuJoCo simulation…'; } catch (e) { error.hidden = false; error.textContent = e.message; } };
+    cameraButton.onclick = () => twinController?.resetCamera();
     runButton.onclick = async () => {
       if (!versionRecord) return;
       const resultEl = sheet.querySelector('[data-result]');
       runButton.disabled = true; resultEl.textContent = demoMode ? 'Running the clearly labeled local preview…' : 'Creating a server schematic experiment…';
       const program = generateCanonicalProgram(ws, assignment).program;
-      if (demoMode) {
-          await animateSimulation(sheet, program.steps);
-        resultEl.textContent = 'Local SO-101 preview finished. Demo mode did not create a VISTA schematic result.';
-        runButton.disabled = !versionRecord;
-        return;
-      }
+      if (demoMode) { await runLocalMuJoCo(); return; }
       try {
         const experiment = await call('createSchematicExperiment', attempt.id, { programVersionId: versionRecord.id, executionMode: 'schematic' });
         const started = await call('runSchematic', experiment.id);
@@ -456,7 +493,10 @@ async function renderWorkspace(lab, requestedAttemptId) {
         ws.setIsReadOnly(true);
       } catch (e) { error.hidden = false; error.textContent = apiErrorMessage(e); }
     };
-    createTwin(sheet.querySelector('[data-twin-canvas]'), sheet.querySelector('[data-joints]'), true);
+    twinReady = createTwin(sheet.querySelector('[data-twin-canvas]'), sheet.querySelector('[data-joints]'), simulationStatus)
+      .then((controller) => { twinController = controller; return controller; })
+      .catch((modelError) => { simulationStatus.textContent = `SO-101 model unavailable: ${modelError.message}`; throw modelError; });
+    twinReady.catch(() => {});
     Blockly.svgResize(ws);
   } catch (error) {
     sheet.innerHTML = `<div class="detail-panel feature-error" role="alert"><h2>Workspace unavailable</h2><p>${escapeHtml(error.message)}</p><button class="ghost" data-back>Back to assignments</button></div>`;
@@ -464,119 +504,28 @@ async function renderWorkspace(lab, requestedAttemptId) {
   }
 }
 
-async function animateSimulation(sheet, steps) {
-  const holder = sheet.querySelector('[data-twin-canvas]');
-  const record = holder && models.get(holder);
-  if (!record) return;
-  const states = sheet.querySelector('[data-joints]');
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    const angle = (i + 1) * 0.28;
-    record.root.rotation.y = step.type === 'home' ? 0 : angle;
-    record.root.rotation.z = step.type === 'preview.move_xyz' ? 0.2 : 0;
-    record.jointValues = [Math.round(angle * 57.3), Math.round(Math.sin(angle) * 44), Math.round(Math.cos(angle) * 35), 0, 0, 0];
-    renderJointTable(states, record.jointValues, 'SIMULATED');
-    await new Promise((resolve) => setTimeout(resolve, 180));
-  }
-}
-
-function createTwin(host, joints, simulated) {
-  if (!host) return;
-  host.replaceChildren();
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color('#f6f5f1');
-  const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 100);
-  camera.position.set(2.4, 2.3, 3.1);
-  camera.lookAt(0, 0.75, 0);
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.setSize(host.clientWidth || 560, host.clientHeight || 340);
-  host.append(renderer.domElement);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x746f66, 2.2));
-  const key = new THREE.DirectionalLight(0xffffff, 2.5); key.position.set(3, 5, 4); scene.add(key);
-  const fill = new THREE.DirectionalLight(0xcde7e2, 1.4); fill.position.set(-4, 2, -3); scene.add(fill);
-  const grid = new THREE.GridHelper(3.2, 24, '#b9b5ac', '#dedbd3'); grid.position.y = -0.02; scene.add(grid);
-  const root = new THREE.Group(); scene.add(root);
-  const loader = new GLTFLoader();
-  const resize = new ResizeObserver(() => {
-    const width = host.clientWidth || 560; const height = host.clientHeight || 340;
-    camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height);
-  });
-  resize.observe(host);
-  const render = () => renderer.render(scene, camera);
-  renderer.setAnimationLoop(render);
-  const record = { root, scene, camera, renderer, resize, joints, jointValues: [0, 0, 0, 0, 0, 0], simulated };
-  models.set(host, record);
-  const load = async () => {
-    try {
-      let bytes;
-      if (bridge?.loadSO101Model) bytes = await bridge.loadSO101Model();
-      else {
-        const response = await fetch('/renderer/assets/SO-Arm101.glb');
-        if (!response.ok) throw new Error('SO-101 model asset is unavailable.');
-        bytes = await response.arrayBuffer();
-      }
-      const normalized = bytes?.data ? Uint8Array.from(bytes.data) : bytes;
-      const data = normalized instanceof ArrayBuffer ? normalized : Uint8Array.from(normalized).buffer;
-      loader.parse(data, '', (gltf) => {
-        const model = gltf.scene;
-        const bounds = new THREE.Box3().setFromObject(model);
-        const size = bounds.getSize(new THREE.Vector3());
-        const scale = 1.8 / Math.max(size.x, size.y, size.z, 0.001);
-        model.scale.setScalar(scale);
-        bounds.setFromObject(model);
-        const center = bounds.getCenter(new THREE.Vector3());
-        // GLTF nodes may carry transforms, so center the entire hierarchy with
-        // a wrapper instead of applying a world-space bounds offset to its root.
-        const framing = new THREE.Group();
-        framing.position.set(-center.x, -bounds.min.y, -center.z);
-        framing.add(model);
-        root.add(framing);
-        model.traverse((node) => { if (node.isMesh) { node.castShadow = true; node.receiveShadow = true; } });
-        const note = host.parentElement?.querySelector('.telemetry-note');
-        if (note) note.textContent = simulated ? 'SO-101 asset loaded · local simulated state' : 'SO-101 model loaded · physical telemetry not connected';
-      }, (error) => showModelError(host, error));
-    } catch (error) { showModelError(host, error); addProceduralArm(root); }
+async function createTwin(host, joints, status) {
+  const viewer = await mountTwinViewer(host);
+  const names = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper'];
+  let disposed = false;
+  const setFrame = (raw) => {
+    const frame = parseTwinFrame(raw, 'local-so101-simulation');
+    if (!frame || disposed) return false;
+    viewer.setFrame(frame);
+    joints.innerHTML = frame.measured.map((reading) => {
+      const value = reading.unit === 'rad' ? reading.position * 180 / Math.PI : reading.position;
+      const label = names.includes(reading.name) ? reading.name.replaceAll('_', ' ') : reading.name;
+      return `<div><span>${escapeHtml(label)}</span><strong>${value.toFixed(1)}°</strong></div>`;
+    }).join('');
+    status.textContent = `MuJoCo · local simulation · ${frame.step || 'Ready'}`;
+    return true;
   };
-  load();
-  let down = null;
-  renderer.domElement.addEventListener('pointerdown', (event) => { down = { x: event.clientX, y: event.clientY }; renderer.domElement.setPointerCapture(event.pointerId); });
-  renderer.domElement.addEventListener('pointermove', (event) => {
-    if (!down) return;
-    root.rotation.y += (event.clientX - down.x) * 0.008;
-    root.rotation.x += (event.clientY - down.y) * 0.005;
-    down = { x: event.clientX, y: event.clientY };
-  });
-  renderer.domElement.addEventListener('pointerup', () => { down = null; });
-  renderer.domElement.addEventListener('wheel', (event) => { camera.position.multiplyScalar(event.deltaY > 0 ? 1.08 : 0.93); camera.position.clampLength(1.5, 8); }, { passive: true });
-  renderJointTable(joints, record.jointValues, simulated ? 'SIMULATED' : 'UNAVAILABLE');
-}
-
-function showModelError(host, error) {
-  let label = host.querySelector('.model-warning');
-  if (!label) { label = document.createElement('div'); label.className = 'model-warning'; host.append(label); }
-  label.textContent = `Model load issue: ${error?.message || 'unknown error'}`;
-}
-
-function addProceduralArm(root) {
-  const metal = new THREE.MeshStandardMaterial({ color: '#d7d2c7', metalness: 0.62, roughness: 0.35 });
-  const teal = new THREE.MeshStandardMaterial({ color: '#14786e', metalness: 0.45, roughness: 0.32 });
-  const segment = (a, b, radius) => {
-    const start = new THREE.Vector3(...a); const end = new THREE.Vector3(...b);
-    const direction = new THREE.Vector3().subVectors(end, start);
-    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.72, radius, direction.length(), 24), metal);
-    mesh.position.copy(start).add(end).multiplyScalar(0.5); mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize()); root.add(mesh);
-    const joint = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.3, 20, 16), teal); joint.position.copy(start); root.add(joint);
+  const stopListening = bridge.onSimulationFrame(setFrame);
+  return {
+    setFrame,
+    resetCamera: () => viewer.resetCamera(),
+    dispose() { if (disposed) return; disposed = true; stopListening(); viewer.dispose(); joints.replaceChildren(); }
   };
-  segment([0, 0, 0], [0, .48, 0], .13); segment([0, .48, 0], [.55, .9, 0], .1); segment([.55, .9, 0], [.95, .68, 0], .07);
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(.36, .38, .12, 40), metal); base.position.y = -.06; root.add(base);
-}
-
-function renderJointTable(target, values, source) {
-  if (!target) return;
-  const labels = ['J1 base', 'J2 shoulder', 'J3 elbow', 'J4 wrist pitch', 'J5 wrist roll', 'J6 gripper'];
-  target.innerHTML = labels.map((label, index) => `<div><span>${label}</span><strong>${source === 'SIMULATED' ? `${values[index] ?? 0}°` : '—'}</strong></div>`).join('');
 }
 
 async function renderTwinPage(lab = null) {

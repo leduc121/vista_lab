@@ -26,7 +26,7 @@ def main() -> int:
         "--name", "vista-edge-runtime", "--distpath", str(DIST.parent),
         "--workpath", str(WORK), "--specpath", str(WORK), "--paths", str(ROOT),
         "--hidden-import", "edge.mqtt_transport",
-        "--collect-all", "lerobot", "--collect-all", "mujoco", "--collect-all", "serial",
+        "--collect-all", "mujoco", "--collect-all", "serial",
         "--collect-all", "paho", str(ROOT / "edge" / "runtime.py"),
     ]
     subprocess.run(command, cwd=ROOT, check=True)

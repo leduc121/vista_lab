@@ -106,41 +106,41 @@
    ========================================================================== */
 :root {
   /* Surfaces */
-  --ground: #f4f6f8;             /* Tinted outer frame */
-  --surface: #ffffff;            /* Inset work sheet */
-  --raised: #f8fafc;             /* Subtle panel fill */
-  --active: #e2e8f0;             /* Active sidebar item */
-  --border: #e2e8f0;             /* Clean 1px border */
-  --rule: #edf2f7;               /* Table hairline rules */
-  --control: #cbd5e1;            /* Input border */
-  --control-focus: #0f766e;
+  --ground: #0c1011;
+  --surface: #13191a;
+  --raised: #1b2324;
+  --active: #202a2b;
+  --border: #2a3738;
+  --rule: #202c2d;
+  --control: #435153;
+  --control-focus: #62b7a6;
 
   /* Inks: strictly >= 4.5:1 contrast */
-  --text: #0f172a;               /* Deep navy ink (16:1 on white) */
-  --muted: #334155;              /* Slate dark (7.8:1 on white, 6.5:1 on ground) */
-  --faint: #475569;              /* Secondary labels (5.2:1 on ground) */
+  --text: #ecf2f1;
+  --muted: #b2c1be;
+  --faint: #95a7a4;
 
   /* Accents & Data Roles */
-  --accent: #0f766e;             /* Lab teal: selection, progress */
-  --accent-light: #ccfbf1;
-  --primary: #0f172a;            /* Primary action button */
-  --primary-ink: #ffffff;
+  --accent: #62b7a6;
+  --accent-light: #143b35;
+  --primary: #167b6b;
+  --primary-ink: #13191a;
 
   /* Status Colors */
-  --positive: #16a34a;           /* Signal green */
-  --negative: #dc2626;           /* Emergency crimson */
-  --warning: #b45309;            /* Amber */
+  --positive: #6bd49a;
+  --negative: #ff7272;
+  --warning: #f1b75b;
 
-  --pill-positive-bg: #dcfce7;
-  --pill-positive-ink: #14532d;
-  --pill-negative-bg: #fee2e2;
-  --pill-negative-ink: #991b1b;
-  --pill-warning-bg: #fef3c7;
-  --pill-warning-ink: #92400e;
-  --pill-neutral-bg: #f1f5f9;
-  --pill-neutral-ink: #334155;
-  --pill-accent-bg: #ccfbf1;
-  --pill-accent-ink: #115e59;
+  --pill-positive-bg: #153426;
+  --pill-positive-ink: #a1ebbb;
+  --pill-negative-bg: #3a2021;
+  --pill-negative-ink: #ffaaaa;
+  --pill-warning-bg: #3b2f1a;
+  --pill-warning-ink: #f2d28e;
+  --pill-neutral-bg: #202a2b;
+  --pill-neutral-ink: #c1ccca;
+  --pill-accent-bg: #143b35;
+  --pill-accent-ink: #a5e1d5;
 
   /* Geometry & Scaling */
   --radius-sheet: 16px;
@@ -247,7 +247,7 @@ input[type="password"] {
   width: 100%;
   min-height: var(--control-height);
   padding: 6px 12px;
-  background-color: #ffffff;
+  background-color: #13191a;
   border: 1px solid var(--control);
   border-radius: var(--radius-control);
   color: var(--text);
@@ -274,7 +274,7 @@ input[type="checkbox"] {
   -webkit-appearance: none;
   width: 16px;
   height: 16px;
-  background-color: #ffffff;
+  background-color: #13191a;
   border: 1px solid var(--control);
   border-radius: 4px;
   cursor: pointer;
@@ -293,8 +293,8 @@ input[type="checkbox"]:checked::after {
   content: "";
   width: 8px;
   height: 4px;
-  border-left: 2px solid #ffffff;
-  border-bottom: 2px solid #ffffff;
+  border-left: 2px solid #13191a;
+  border-bottom: 2px solid #13191a;
   transform: rotate(-45deg) translate(1px, -1px);
 }
 
@@ -348,7 +348,7 @@ button:disabled {
 }
 
 button.ghost {
-  background-color: #ffffff;
+  background-color: #13191a;
   border: 1px solid var(--control);
   color: var(--text);
 }
@@ -362,7 +362,7 @@ button.ghost:hover:not(:disabled) {
 button.danger {
   background-color: var(--negative);
   border: 2px solid #b91c1c;
-  color: #ffffff;
+  color: #13191a;
   min-height: 48px;
   font-size: 15px;
   font-weight: 700;
@@ -410,16 +410,16 @@ button.link-btn:hover {
 
 /* 1. Chưa làm: viền xám trung tính */
 .status-pill.todo {
-  background-color: #f8fafc;
-  color: #475569;
-  border: 1px solid #cbd5e1;
+  background-color: var(--pill-neutral-bg);
+  color: var(--pill-neutral-ink);
+  border: 1px solid var(--border);
 }
 
 /* 2. Đang làm: hổ phách kèm dot nhấp nhẹ */
 .status-pill.progress {
-  background-color: #fffbeb;
-  color: #b45309;
-  border: 1px solid #fde68a;
+  background-color: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  border: 1px solid #775c2e;
 }
 
 .dot-amber-pulse {
@@ -439,23 +439,23 @@ button.link-btn:hover {
 
 /* 3. Hoàn thành: xanh lá kèm tick */
 .status-pill.done {
-  background-color: #ecfdf5;
-  color: #047857;
-  border: 1px solid #a7f3d0;
+  background-color: var(--pill-positive-bg);
+  color: var(--pill-positive-ink);
+  border: 1px solid #2d6548;
 }
 
 /* 4. Bị khoá: xám kèm icon khoá */
 .status-pill.locked {
-  background-color: #f1f5f9;
-  color: #334155;
-  border: 1px solid #cbd5e1;
+  background-color: #202a2b;
+  color: var(--pill-neutral-ink);
+  border: 1px solid var(--border);
 }
 
 /* 5. Thất bại / Lỗi: đỏ */
 .status-pill.danger {
-  background-color: #fef2f2;
-  color: #b91c1c;
-  border: 1px solid #fecaca;
+  background-color: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  border: 1px solid #713b3d;
 }
 
 /* Due date display (Requirement 3) */
@@ -545,7 +545,7 @@ button.btn-row-action {
   font-size: 12px;
   font-weight: 500;
   border-radius: var(--radius-control);
-  background-color: #ffffff;
+  background-color: #13191a;
   border: 1px solid #cbd5e1;
   color: #0f172a;
   cursor: pointer;
@@ -554,7 +554,7 @@ button.btn-row-action {
 }
 
 button.btn-row-action:hover:not(:disabled) {
-  background-color: #f8fafc;
+  background-color: #1b2324;
   border-color: #94a3b8;
 }
 
@@ -576,13 +576,13 @@ button.btn-row-action.ghost-action {
 }
 
 button.btn-row-action.ghost-action:hover {
-  background-color: #f1f5f9;
+  background-color: #202a2b;
   color: var(--text);
 }
 
 button.btn-row-action:disabled {
   cursor: not-allowed;
-  background-color: #f1f5f9;
+  background-color: #202a2b;
   border-color: #cbd5e1;
   color: #334155;
 }
@@ -658,7 +658,7 @@ button.btn-row-action:disabled {
 .login-sheet {
   width: 100%;
   max-width: 440px;
-  background-color: #ffffff;
+  background-color: #13191a;
   border: 1px solid var(--border);
   border-radius: var(--radius-sheet);
   padding: 36px;
@@ -798,7 +798,7 @@ button.btn-row-action:disabled {
 }
 
 .sidebar-nav button.active {
-  background-color: #ffffff;
+  background-color: #13191a;
   border-color: var(--border);
   color: var(--text);
   font-weight: 600;
@@ -860,7 +860,7 @@ button.btn-row-action:disabled {
 /* Sidebar Robot Health Widget */
 .sidebar-robot-status {
   padding: 12px;
-  background-color: #ffffff;
+  background-color: #13191a;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   margin-bottom: 16px;
@@ -986,7 +986,7 @@ button.btn-row-action:disabled {
 
 .robot-status-banner.warning {
   border-left: 4px solid var(--negative);
-  background-color: #fef2f2;
+  background-color: #291c1d;
 }
 
 .robot-status-banner-left {
@@ -1007,7 +1007,7 @@ button.btn-row-action:disabled {
 }
 
 .robot-status-banner.warning .robot-status-banner-desc {
-  color: #991b1b;
+  color: #ffaaaa;
   font-weight: 500;
 }
 
@@ -1053,7 +1053,7 @@ button.btn-row-action:disabled {
 
 /* Spotlight Hero Card (Priority Next Lab - Hero of the Page) */
 .spotlight-box {
-  background-color: #ffffff;
+  background-color: #13191a;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: 20px 24px;
@@ -1132,7 +1132,7 @@ button.btn-row-action:disabled {
   min-height: 38px;
   padding: 6px 18px;
   background-color: #0f172a;
-  color: #ffffff;
+  color: #13191a;
   border: 1px solid #0f172a;
   border-radius: var(--radius-control);
   font-family: var(--font);
@@ -1226,7 +1226,7 @@ button.btn-row-action:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: 20px;
-  background-color: #ffffff;
+  background-color: #13191a;
 }
 
 .course-card-header {
@@ -1290,7 +1290,7 @@ button.btn-row-action:disabled {
 .progress-track {
   width: 100%;
   height: 5px;
-  background-color: #edf2f7;
+  background-color: #202a2b;
   border-radius: var(--radius-pill);
   overflow: hidden;
   margin: 10px 0 16px;
@@ -1336,7 +1336,7 @@ button.btn-row-action:disabled {
 }
 
 .lab-table-row.locked {
-  background-color: #fafbfc;
+  background-color: #172021;
 }
 
 /* Lock Reason Note (Requirement 5: quiet note with icon, no bright pink background) */
@@ -1346,7 +1346,7 @@ button.btn-row-action:disabled {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background-color: #f8fafc;
+  background-color: #1b2324;
   border: 1px solid #e2e8f0;
   border-radius: var(--radius-control);
   font-size: 12px;
@@ -1402,7 +1402,7 @@ button.btn-row-action:disabled {
   border-radius: var(--radius-card);
   padding: 20px;
   margin-bottom: 16px;
-  background-color: #ffffff;
+  background-color: #13191a;
 }
 
 .detail-panel h3 {
@@ -1441,7 +1441,7 @@ button.btn-row-action:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: 24px;
-  background-color: #ffffff;
+  background-color: #13191a;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -1452,7 +1452,7 @@ button.btn-row-action:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: 24px;
-  background-color: #ffffff;
+  background-color: #13191a;
   max-height: 480px;
   overflow-y: auto;
 }
@@ -1629,10 +1629,10 @@ button.btn-row-action:disabled {
 .setup-card { display:grid; grid-template-columns:minmax(240px, 0.9fr) minmax(0, 1.4fr); align-items:start; gap:24px; padding:16px 0; border-bottom:1px solid var(--rule); }
 .setup-card-title { padding-top:6px; }
 .setup-card h2,.setup-controls h2 { margin:0; font-size:15px; font-weight:500; }
-.setup-state-panel { display:flex; align-items:flex-start; gap:12px; padding:12px 14px; border-radius:10px; background:#fafafa; }
+.setup-state-panel { display:flex; align-items:flex-start; gap:12px; padding:12px 14px; border-radius:10px; background:#172021; }
 .setup-state-panel p,.setup-controls p { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
-.setup-badge { flex:none; padding:4px 8px; border:1px solid #d8a15d; border-radius:999px; color:#8a4d08; background:#fff8e8; font:600 10px/1.3 var(--font-sans, sans-serif); letter-spacing:.03em; }
-.setup-badge.ready { color:#17634b; border-color:#8bc8ad; background:#effaf4; }
+.setup-badge { flex:none; padding:4px 8px; border:1px solid #775c2e; border-radius:999px; color:#f2d28e; background:#3b2f1a; font:600 10px/1.3 var(--font-sans, sans-serif); letter-spacing:.03em; }
+.setup-badge.ready { color:#a1ebbb; border-color:#2d6548; background:#153426; }
 .setup-controls { display:grid; grid-template-columns:1fr 1fr; align-items:center; gap:10px; }
 .setup-controls h2,.setup-controls p { grid-column:1/-1; }
 .setup-controls select,.setup-controls input { min-width:0; height:40px; padding:0 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); font:inherit; }

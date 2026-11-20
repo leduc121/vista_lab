@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -34,7 +34,7 @@ const loadConfig = () => {
     const saved = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
     let savedTwinWsUrl = '';
     try { savedTwinWsUrl = validateTwinWsUrl(saved.twinWsUrl); } catch {}
-    return { ...defaults, rememberedUsername: typeof saved.rememberedUsername === 'string' ? saved.rememberedUsername.slice(0, 80) : '', twinWsUrl: envUrl ? twinWsUrl : savedTwinWsUrl, twinWsConfigurationError, mock: defaults.mock };
+    return { ...defaults, rememberedUsername: typeof saved.rememberedUsername === 'string' ? saved.rememberedUsername.slice(0, 80) : '', twinWsUrl: envUrl ? twinWsUrl : savedTwinWsUrl, twinWsConfigurationError, mujocoModelPath: typeof saved.mujocoModelPath === 'string' ? saved.mujocoModelPath : '', mock: defaults.mock };
   } catch { return { ...defaults, twinWsUrl, twinWsConfigurationError }; }
 };
 
@@ -119,7 +119,7 @@ function rememberDraftOwner(profile) {
 app.whenReady().then(() => {
   config = loadConfig();
   client = createClient(config);
-  edgeSupervisor = new EdgeSupervisor({ app, logPath: path.join(app.getPath('userData'), 'logs', 'edge-runtime.jsonl') });
+  edgeSupervisor = new EdgeSupervisor({ app, logPath: path.join(app.getPath('userData'), 'logs', 'edge-runtime.jsonl'), modelPath: config.mujocoModelPath });
   deviceProvisioning = new DeviceProvisioning({ safeStorage, storageDir: path.join(app.getPath('userData'), 'device-identity') });
   // The renderer can still open when a packaged runtime is absent; setup will report BLOCKED.
   edgeSupervisor.start();
@@ -146,19 +146,45 @@ app.whenReady().then(() => {
   });
   registerHandle('edge:disconnect', async () => { requireLocalSession(); return edgeSupervisor.request('disconnect'); });
   registerHandle('edge:joint-state', async () => { requireLocalSession(); return edgeSupervisor.request('joint_state'); });
+  registerHandle('simulation:select-model', async () => {
+    requireLocalSession();
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose SO-101 MuJoCo scene', properties: ['openFile'],
+      filters: [{ name: 'MuJoCo XML scene', extensions: ['xml', 'mjcf'] }]
+    });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+    const selected = fs.realpathSync(result.filePaths[0]);
+    if (!/\.(xml|mjcf)$/i.test(selected)) throw new Error('Choose a MuJoCo XML/MJCF file.');
+    const simulation = await edgeSupervisor.request('load_model', { path: selected }, 30000);
+    config.mujocoModelPath = selected;
+    fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, twinWsUrl: config.twinWsUrl, mujocoModelPath: selected }), { mode: 0o600 });
+    fs.chmodSync(configPath(), 0o600);
+    return simulation;
+  });
+  registerHandle('edge:cancel-simulation', async () => {
+    requireLocalSession();
+    return edgeSupervisor.request('cancel_simulation');
+  });
+  registerHandle('edge:pause-simulation', async () => {
+    requireLocalSession();
+    return edgeSupervisor.request('pause_simulation');
+  });
+  registerHandle('edge:resume-simulation', async () => {
+    requireLocalSession();
+    return edgeSupervisor.request('resume_simulation');
+  });
   registerHandle('provisioning:status', () => deviceProvisioning.status());
   registerHandle('provisioning:create-key', () => { requireLocalSession(); return deviceProvisioning.createEnrollmentKey(); });
   registerHandle('edge:simulate', async (attemptId, command, confirmation) => {
     if (!client.getSession?.() && !config.mock) throw new Error('Sign in before running a lab simulation.');
     if (typeof attemptId !== 'string' || !attemptId || attemptId.length > 80) throw new Error('Invalid lab attempt.');
     const attempt = await client.getAttempt(attemptId);
-    const response = await edgeRuntime.execute({
-      attempt,
-      authorization: { allowed: attempt?.status === 'in_progress', attemptId: attempt?.id, expiresAt: Date.now() + 5000 },
-      command,
-      confirmation
-    });
-    return response;
+    if (attempt?.id !== attemptId || attempt?.status !== 'in_progress') throw new Error('VISTA no longer authorizes this attempt for local simulation.');
+    if (!command || !Number.isSafeInteger(command.expiresAt) || command.expiresAt <= Date.now()) throw new Error('Simulation command is expired.');
+    const authorization = { allowed: true, attemptId: attempt.id, expiresAt: Math.min(command.expiresAt, Date.now() + 5 * 60_000) };
+    return edgeSupervisor.request('simulate', { attempt, authorization, command, confirmation }, 5 * 60_000,
+      (frame) => { if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('simulation:frame', frame); });
   });
   registerHandle('cfg:set', (patch = {}) => {
     const activeSession = client.getSession?.();
@@ -168,7 +194,7 @@ app.whenReady().then(() => {
     if (typeof patch.twinWsUrl === 'string') next.twinWsUrl = patch.twinWsUrl.trim() ? validateTwinWsUrl(patch.twinWsUrl) : '';
     config = next;
     fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, twinWsUrl: config.twinWsUrl }), { mode: 0o600 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '' }), { mode: 0o600 });
     fs.chmodSync(configPath(), 0o600);
     client = createClient(config);
     if (activeSession) client.setSession(activeSession);
@@ -206,10 +232,10 @@ app.whenReady().then(() => {
     if (!allowed.has(method) || typeof client[method] !== 'function') return { ok: false, error: 'Method not allowed' };
     try {
       const data = await client[method](...args);
-      if (method === 'submitAttempt') { edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('disconnect').catch(() => {}); }
+      if (method === 'submitAttempt') { edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('cancel_simulation').catch(() => {}); void edgeSupervisor.request('disconnect').catch(() => {}); }
       if (method === 'logout' || (method === 'login' && data?.password_change_required)) activeDraftOwner = null;
       if (method === 'login' || method === 'setupStudent') persistSession(client.getSession());
-      if (method === 'logout') { clearPersistedSession(); edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('disconnect').catch(() => {}); }
+      if (method === 'logout') { clearPersistedSession(); edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('cancel_simulation').catch(() => {}); void edgeSupervisor.request('disconnect').catch(() => {}); }
       else if (client.getSession?.()) persistSession(client.getSession());
       if (method === 'login' && data?.password_change_required) {
         return { ok: true, data: { passwordChangeRequired: true, persistentSession: secureStorageAvailable() } };
@@ -228,6 +254,7 @@ app.whenReady().then(() => {
       if (['SESSION_EXPIRED', 'SESSION_ROTATED', 'TEMPORARY_PASSWORD_EXPIRED'].includes(error?.code) || (['login', 'setupStudent'].includes(method) && client.getSession?.())) {
         activeDraftOwner = null;
         edgeRuntime.revokeAuthorization();
+        void edgeSupervisor.request('cancel_simulation').catch(() => {});
         void edgeSupervisor.request('disconnect').catch(() => {});
         clearPersistedSession();
         await client.logout();
@@ -246,10 +273,6 @@ app.whenReady().then(() => {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     fs.writeFileSync(file, JSON.stringify(draft), { mode: 0o600 });
     return { saved: true };
-  });
-  registerHandle('asset:so101', () => {
-    const modelPath = path.join(__dirname, 'renderer', 'assets', 'SO-Arm101.glb');
-    return fs.readFileSync(modelPath);
   });
   registerHandle('asset:twin-urdf', () => fs.readFileSync(path.join(__dirname, 'renderer', 'assets', 'so101', 'urdf', 'so101_new_calib.urdf'), 'utf8'));
   registerHandle('asset:twin-mesh', (filename) => {
