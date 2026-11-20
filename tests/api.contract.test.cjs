@@ -1,0 +1,282 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { createClient } = require('../api');
+const { isTrustedMainFrame, validateTwinWsUrl } = require('../ipc-security');
+
+test('refreshes an expired access token through public Supabase auth and retries the API request', async (t) => {
+  const requests = [];
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url, options) => {
+    requests.push({ url: String(url), options });
+    if (String(url).endsWith('/auth/students/login')) return new Response(JSON.stringify({ access_token: 'old-access', refresh_token: 'private-refresh', expires_in: 3600 }), { status: 200 });
+    if (String(url).includes('/auth/v1/token?grant_type=refresh_token')) return new Response(JSON.stringify({ access_token: 'new-access', refresh_token: 'rotated-refresh', expires_in: 3600 }), { status: 200 });
+    if (String(url).endsWith('/me') && options.headers.Authorization === 'Bearer old-access') return new Response('{}', { status: 401 });
+    if (String(url).endsWith('/me')) return new Response(JSON.stringify({ id: 'student', fullName: 'Student' }), { status: 200 });
+    return new Response('{}', { status: 200 });
+  };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1', supabaseUrl: 'https://project.supabase.co', supabaseAnonKey: 'public-anon-key' });
+  await client.login({ schoolCode: 'school', studentCode: 'student', password: 'password' });
+  await client.me();
+  assert.equal(requests[1].url, 'https://api.example.test/api/v1/me');
+  assert.equal(requests[2].url, 'https://project.supabase.co/auth/v1/token?grant_type=refresh_token');
+  assert.equal(JSON.parse(requests[2].options.body).refresh_token, 'private-refresh');
+  assert.equal(requests[2].options.headers.apikey, 'public-anon-key');
+  assert.equal(requests[3].options.headers.Authorization, 'Bearer new-access');
+  assert.equal(client.getSession().refresh_token, 'rotated-refresh');
+});
+
+test('expired Supabase refresh fails closed and drops the in-memory session', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url) => String(url).includes('/auth/v1/token')
+    ? new Response('{"error":"invalid_grant"}', { status: 400 }) : new Response('{}', { status: 401 });
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1', supabaseUrl: 'https://project.supabase.co', supabaseAnonKey: 'public-anon-key' });
+  client.setSession({ access_token: 'expired', refresh_token: 'revoked' });
+  await assert.rejects(client.restoreSession({ access_token: 'expired', refresh_token: 'revoked', expires_at: 1 }), { code: 'SESSION_EXPIRED' });
+  assert.equal(client.getSession(), null);
+});
+
+test('logout clears local session even when Supabase cannot be reached', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => { throw new Error('offline'); };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1', supabaseUrl: 'https://project.supabase.co', supabaseAnonKey: 'public-anon-key' });
+  client.setSession({ access_token: 'access', refresh_token: 'refresh' });
+  await client.logout();
+  assert.equal(client.getSession(), null);
+});
+
+test('a transient network failure keeps the student session for an explicit retry', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  let calls = 0;
+  global.fetch = async () => {
+    calls++;
+    if (calls === 1) throw new TypeError('fetch failed');
+    return new Response(JSON.stringify([{ classroom_assignment_id: 'test-assignment' }]), { status: 200 });
+  };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1' });
+  client.setSession({ access_token: 'student-token', refresh_token: 'refresh-token' });
+  await assert.rejects(client.listLabs(), /fetch failed/);
+  assert.equal(client.getSession().access_token, 'student-token');
+  assert.equal((await client.listLabs()).length, 1);
+});
+
+test('a refreshed token rejected by the Education API expires the student session', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url) => String(url).includes('/auth/v1/token')
+    ? new Response(JSON.stringify({ access_token: 'refreshed', refresh_token: 'rotated', expires_in: 3600 }), { status: 200 })
+    : new Response(JSON.stringify({ message: 'token not accepted' }), { status: 401 });
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1', supabaseUrl: 'https://project.supabase.co', supabaseAnonKey: 'public-anon-key' });
+  client.setSession({ access_token: 'expired', refresh_token: 'valid-refresh' });
+  await assert.rejects(client.me(), { code: 'SESSION_EXPIRED' });
+  assert.equal(client.getSession(), null);
+});
+
+test('SESSION_ROTATED is preserved and clears the stale session without refreshing it', async (t) => {
+  const originalFetch = global.fetch;
+  let refreshCalls = 0;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url) => {
+    if (String(url).includes('/auth/v1/token')) refreshCalls++;
+    return new Response(JSON.stringify({ code: 'SESSION_ROTATED', message: 'password changed' }), { status: 401 });
+  };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1', supabaseUrl: 'https://project.supabase.co', supabaseAnonKey: 'anon' });
+  client.setSession({ access_token: 'stale', refresh_token: 'stale-refresh' });
+  await assert.rejects(client.me(), { code: 'SESSION_ROTATED', status: 401 });
+  assert.equal(refreshCalls, 0);
+  assert.equal(client.getSession(), null);
+});
+
+test('Blockly versions and attempt-bound viewer scope use verified student routes', async (t) => {
+  const requests = [];
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url, options) => { requests.push({ url: String(url), options }); return new Response('{}', { status: 200 }); };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1' });
+  client.setSession({ access_token: 'student-token', refresh_token: 'refresh' });
+  const programId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const attemptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const robotId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  await client.programVersions(programId);
+  await client.issueTwinViewerScope(attemptId, { robotId, labSessionId: 'lab-session-1' });
+  assert.equal(requests[0].url, `https://api.example.test/api/v1/me/programs/${programId}/versions`);
+  assert.equal(requests[1].url, `https://api.example.test/api/v1/me/attempts/${attemptId}/digital-twin/viewer-scope`);
+  assert.equal(requests[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(requests[1].options.body), { robotId, labSessionId: 'lab-session-1' });
+  assert.equal(requests[1].options.headers.Authorization, 'Bearer student-token');
+});
+
+test('program update unwraps the Education API RETURNING row for version creation', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  const programId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const updated = { id: programId, workspace_json: { blocks: {} }, validation_result: { valid: true } };
+  global.fetch = async (_url, options) => {
+    assert.equal(options.method, 'PATCH');
+    return new Response(JSON.stringify([updated]), { status: 200 });
+  };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1' });
+  client.setSession({ access_token: 'student-token', refresh_token: 'refresh-token' });
+  assert.deepEqual(await client.updateProgram(programId, { workspaceJson: updated.workspace_json }), updated);
+});
+
+test('temporary-password login remains restricted across refresh and changes through the verified route', async (t) => {
+  const requests = [];
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    if (String(url).includes('/auth/students/login')) return new Response(JSON.stringify({ access_token: 'restricted', refresh_token: 'r1', expires_in: 1, password_change_required: true }), { status: 201 });
+    if (String(url).includes('/auth/v1/token')) return new Response(JSON.stringify({ access_token: 'restricted2', refresh_token: 'r2', expires_in: 3600 }), { status: 200 });
+    if (String(url).includes('/auth/students/password')) return new Response(JSON.stringify({ access_token: 'public', refresh_token: 'r3', expires_in: 3600 }), { status: 200 });
+    if (String(url).endsWith('/me')) return new Response(JSON.stringify({ fullName: 'Student' }), { status: 200 });
+    return new Response(JSON.stringify({ code: 'PASSWORD_CHANGE_REQUIRED' }), { status: 403 });
+  };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1', supabaseUrl: 'https://project.supabase.co', supabaseAnonKey: 'anon' });
+  const login = await client.login({ schoolCode: 'S', studentCode: 'ST', password: 'temporary' });
+  assert.equal(login.password_change_required, true);
+  await assert.rejects(client.listLabs(), { code: 'PASSWORD_CHANGE_REQUIRED', status: 403 });
+  const session = client.getSession();
+  session.expires_at = Math.floor(Date.now() / 1000) - 1;
+  const restored = await client.restoreSession(session);
+  assert.deepEqual(restored, { passwordChangeRequired: true });
+  const changed = await client.changeStudentPassword({ currentPassword: 'temporary', newPassword: 'long-secure-password' });
+  assert.equal(changed.access_token, 'public');
+  assert.equal((await client.me()).name, 'Student');
+  assert.ok(requests.some((r) => r.url.endsWith('/auth/students/password') && r.options.method === 'PATCH'));
+});
+
+test('Electron accepts only the trusted main frame and exact packaged page', () => {
+  const frame = { url: 'file:///app/renderer/index.html', isMainFrame: true };
+  const window = { webContents: { mainFrame: frame } };
+  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: frame }, window, '/app/renderer/index.html'), true);
+  assert.equal(isTrustedMainFrame({ sender: {}, senderFrame: frame }, window, '/app/renderer/index.html'), false);
+  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: { ...frame, url: 'https://evil.invalid/' } }, window, '/app/renderer/index.html'), false);
+  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: { ...frame, isMainFrame: false } }, window, '/app/renderer/index.html'), false);
+});
+
+test('Twin endpoint allows secure remote and loopback development URLs only', () => {
+  assert.equal(validateTwinWsUrl('wss://twin.example.edu/ws/twin'), 'wss://twin.example.edu/ws/twin');
+  assert.equal(validateTwinWsUrl('ws://127.0.0.1:8767/ws/twin'), 'ws://127.0.0.1:8767/ws/twin');
+  for (const url of [
+    'ws://twin.example.edu/ws/twin', 'https://twin.example.edu/ws/twin',
+    'wss://user:secret@twin.example.edu/ws/twin', 'wss://twin.example.edu/ws/twin?token=secret',
+    'wss://twin.example.edu/other'
+  ]) assert.throws(() => validateTwinWsUrl(url));
+});
+
+test('API failures preserve forbidden status for feature-level denial handling', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => new Response(JSON.stringify({ message: 'forbidden' }), { status: 403 });
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1' });
+  client.setSession({ access_token: 'access', refresh_token: 'refresh' });
+  await assert.rejects(client.listLabs(), (error) => error.status === 403 && error.code === 'FORBIDDEN');
+});
+
+test('student login follows the Education API contract and uses bearer auth for student routes', async (t) => {
+  const requests = [];
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url, options) => {
+    requests.push({ url: String(url), options });
+    if (String(url).endsWith('/auth/students/login')) {
+      return new Response(JSON.stringify({ access_token: 'access-test', refresh_token: 'refresh-test', expires_in: 3600 }), { status: 201 });
+    }
+    if (String(url).endsWith('/me')) return new Response(JSON.stringify({ id: 'student-id', fullName: 'Student Test' }), { status: 200 });
+    if (String(url).endsWith('/me/learning')) return new Response(JSON.stringify([]), { status: 200 });
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+
+  const client = createClient({ mock: false, educationApi: 'https://api.skynex.best/api/v1' });
+  await client.login({ schoolCode: 'SCHOOL-1', studentCode: 'STUDENT-1', password: 'not-saved' });
+  assert.deepEqual(JSON.parse(requests[0].options.body), { schoolCode: 'SCHOOL-1', studentCode: 'STUDENT-1', password: 'not-saved' });
+  await client.me();
+  await client.listLabs();
+  assert.equal(requests[1].url, 'https://api.skynex.best/api/v1/me');
+  assert.equal(requests[2].url, 'https://api.skynex.best/api/v1/me/learning');
+  assert.equal(requests[2].options.headers.Authorization, 'Bearer access-test');
+  assert.equal(client.getSession().refresh_token, 'refresh-test');
+});
+
+test('unknown temporary-password challenge responses fail closed and are not persisted', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => new Response(JSON.stringify({ status: 'password_change_required', changeToken: 'opaque-test-challenge' }), { status: 200 });
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1' });
+  await assert.rejects(client.login({ schoolCode: 'school', studentCode: 'student', password: 'temporary-test-password' }), /invalid student session/i);
+  assert.equal(client.getSession(), null);
+  assert.equal(client.changeTemporaryPassword, undefined, 'do not fabricate a password-change route before backend contract verification');
+});
+
+test('physical execution mutation methods are not exposed and issue no request', async (t) => {
+  let requestCount = 0;
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => { requestCount++; return new Response('{}', { status: 200 }); };
+  const client = createClient({ mock: false, educationApi: 'https://api.skynex.best/api/v1' });
+  assert.equal(client.preparePhysicalExecution, undefined);
+  assert.equal(client.startPhysicalExecution, undefined);
+  assert.equal(client.stopPhysicalExecution, undefined);
+  assert.equal(requestCount, 0);
+});
+
+test('student identifiers in REST paths must be UUIDs', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => new Response('{}', { status: 200 });
+  const client = createClient({ mock: false, educationApi: 'https://api.skynex.best/api/v1' });
+  assert.throws(() => client.startAttempt('not-a-uuid'), /không hợp lệ/i);
+});
+
+test('Education API configuration rejects lookalike loopback hosts and embedded credentials before fetch', async (t) => {
+  const originalFetch = global.fetch;
+  let requestCount = 0;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => { requestCount++; throw new Error('unexpected request'); };
+  for (const url of ['http://localhost.evil.test/api/v1', 'https://name:secret@api.example.test/api/v1', 'https://api.example.test/api/v1?token=secret', 'http://api.example.test/api/v1']) {
+    const client = createClient({ mock: false, educationApi: url });
+    await assert.rejects(client.login({ schoolCode: 'school', studentCode: 'student', password: 'test' }));
+  }
+  const unconfigured = createClient({ mock: false, educationApi: '' });
+  await assert.rejects(unconfigured.login({ schoolCode: 'school', studentCode: 'student', password: 'test' }), /Configure VISTA_EDUCATION_API/);
+  assert.equal(requestCount, 0);
+});
+
+test('Linux session persistence rejects Electron basic_text fallback', () => {
+  const { secureStorageAvailable } = require('../session-security');
+  const storage = (backend, encrypted = true) => ({
+    isEncryptionAvailable: () => encrypted,
+    getSelectedStorageBackend: () => backend
+  });
+  assert.equal(secureStorageAvailable(storage('basic_text'), 'linux'), false);
+  assert.equal(secureStorageAvailable(storage('unknown'), 'linux'), false);
+  assert.equal(secureStorageAvailable(storage('gnome_libsecret'), 'linux'), true);
+  assert.equal(secureStorageAvailable(storage('kwallet6'), 'linux'), true);
+  assert.equal(secureStorageAvailable(storage('gnome_libsecret', false), 'linux'), false);
+  assert.equal(secureStorageAvailable(storage('unknown'), 'win32'), true);
+});
+
+test('Twin parser requires six measured SO-101 joints and rejects wrong robot frames', () => {
+  const esbuild = require('esbuild');
+  const Module = require('node:module');
+  const path = require('node:path');
+  const entry = path.resolve(__dirname, '../renderer/twin-viewer.js');
+  const output = esbuild.buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false, logLevel: 'silent' }).outputFiles[0].text;
+  const loaded = new Module(entry, module);
+  loaded.filename = entry;
+  loaded.paths = Module._nodeModulePaths(__dirname);
+  loaded._compile(output, entry);
+  const { parseTwinFrame } = loaded.exports;
+  const measured = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper']
+    .map((name) => ({ name, position: 0, unit: 'rad' }));
+  const frame = { schema_version: 1, robot_id: 'robot-a', source_mode: 'SIMULATION', connection: 'connected',
+    calibration_status: 'NOT_APPLICABLE', sequence: 1, controller_id: 'test', measured_at: new Date().toISOString(), measured };
+  assert.equal(parseTwinFrame(frame, 'robot-a'), frame);
+  assert.equal(parseTwinFrame({ ...frame, measured: undefined }, 'robot-a'), null);
+  assert.equal(parseTwinFrame({ ...frame, measured: measured.slice(1) }, 'robot-a'), null);
+  assert.equal(parseTwinFrame(frame, 'robot-b'), null);
+});

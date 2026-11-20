@@ -1,0 +1,56 @@
+name: Native desktop acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'edge/**'
+      - 'main.js'
+      - 'preload.js'
+      - 'edge-supervisor.js'
+      - 'device-provisioning.js'
+      - 'renderer/app.js'
+      - 'renderer/style.css'
+      - 'tests/**'
+      - 'scripts/build-edge-runtime.py'
+      - 'package.json'
+      - 'requirements-edge.txt'
+      - '.github/workflows/native-build.yml'
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: --linux AppImage deb
+          - os: windows-latest
+            target: --win nsis
+          - os: macos-15-intel
+            target: --mac dmg --x64
+          - os: macos-15
+            target: --mac dmg --arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements-edge.txt
+      - run: python -m unittest discover -s edge/tests -v
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:edge-runtime
+        shell: bash
+      - run: npm run build:renderer
+      - run: npx electron-builder ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vista-lab-station-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+

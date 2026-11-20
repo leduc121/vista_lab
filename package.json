@@ -1,0 +1,87 @@
+{
+  "name": "vista-lab-station",
+  "version": "0.1.0",
+  "description": "VISTA Lab Station - desktop app to run teacher-assigned physical robot labs",
+  "author": "VISTA Education",
+  "homepage": "https://github.com/SKYNET-Thesis/se",
+  "main": "main.js",
+  "scripts": {
+    "build:renderer": "node scripts/build-renderer.cjs",
+    "typecheck": "node scripts/check-source.cjs",
+    "test": "node tests/api.contract.test.cjs && node --test tests/robot-runtime.test.cjs tests/edge-supervisor.test.cjs tests/device-provisioning.test.cjs",
+    "test:integration": "node scripts/integration-acceptance.cjs",
+    "smoke": "npm run build:renderer && node scripts/desktop-smoke.cjs",
+    "start": "npm run build:renderer && node scripts/start-electron.cjs",
+    "build:edge-runtime": "python3 scripts/build-edge-runtime.py",
+    "dist": "npm run build:edge-runtime && npm run build:renderer && electron-builder --linux AppImage deb",
+    "dist:win": "npm run build:edge-runtime && npm run build:renderer && electron-builder --win nsis",
+    "dist:mac": "npm run build:edge-runtime && npm run build:renderer && electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "@esbuild/linux-x64": "file:vendor/deps/esbuild-linux-x64-0.21.5.tgz",
+    "@fontsource/geist-mono": "^5.3.0",
+    "@fontsource/geist-sans": "^5.3.0",
+    "@fontsource/instrument-serif": "^5.3.0",
+    "blockly": "file:vendor/deps/blockly-13.4.0.tgz",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "file:vendor/deps/esbuild-0.21.5.tgz",
+    "puppeteer-core": "^25.16.0",
+    "three": "file:vendor/deps/three-0.186.1.tgz",
+    "urdf-loader": "file:vendor/deps/urdf-loader-0.13.1.tgz"
+  },
+  "build": {
+    "appId": "edu.vista.labstation",
+    "productName": "VISTA Lab Station",
+    "linux": {
+      "icon": "icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Education",
+      "maintainer": "VISTA Education"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "icon.ico",
+      "signAndEditExecutable": false
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "api.js",
+      "ipc-security.js",
+      "robot-runtime.js",
+      "edge-supervisor.js",
+      "device-provisioning.js",
+      "session-security.js",
+      "package.json",
+      "renderer/**/*",
+      "!renderer/desktop-entry.js",
+      "!renderer/features.js",
+      "!renderer/features.css",
+      "!renderer/twin-viewer.js",
+      "!renderer/.hallmark/**",
+      "!vendor/**",
+      "!tests/**",
+      "!dev/**",
+      "!docs/**",
+      "!.agents/**"
+    ],
+    "extraResources": [
+      { "from": "edge/dist/vista-edge-runtime", "to": "edge-runtime" }
+    ]
+  },
+  "dependencies": {
+    "@fontsource/albert-sans": "^5.3.0",
+    "@fontsource/be-vietnam-pro": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0"
+  }
+}

@@ -1,0 +1,679 @@
+import * as Blockly from 'blockly';
+import 'blockly/blocks';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mountTwinViewer, parseTwinFrame } from './twin-viewer.js';
+import './features.css';
+
+const bridge = window.vista;
+const supported = {
+  'arm.select': 'robot_select_arm',
+  home: 'robot_move_home',
+  'preview.move_xyz': 'robot_move_to',
+  wait: 'robot_wait',
+  'gripper.open': 'robot_gripper_open',
+  'gripper.close': 'robot_gripper_close'
+};
+const blockLabels = {
+  'arm.select': 'Arm', home: 'Home', 'preview.move_xyz': 'Learning preview point',
+  wait: 'Wait', 'gripper.open': 'Open gripper', 'gripper.close': 'Close gripper'
+};
+const palette = { start: '#2B2F35', movement: '#0F7A6E', gripper: '#A86A12', timing: '#5B6573', control: '#4C5C9E' };
+const models = new WeakMap();
+let activeWorkspace = null;
+let activeTwin = null;
+
+Blockly.common.defineBlocksWithJsonArray([
+  { type: 'robot_start', message0: 'when program starts', nextStatement: null, style: 'start_blocks', tooltip: 'Every VISTA program begins here.' },
+  { type: 'robot_select_arm', message0: 'use %1 arm', args0: [{ type: 'field_dropdown', name: 'ARM', options: [['left', 'left'], ['right', 'right']] }], message1: '%1', args1: [{ type: 'input_statement', name: 'DO' }], previousStatement: null, nextStatement: null, style: 'movement_blocks', tooltip: 'Select the arm for the blocks inside.' },
+  { type: 'robot_move_home', message0: 'move selected arm home', previousStatement: null, nextStatement: null, style: 'movement_blocks', tooltip: 'Return the selected arm to its home pose.' },
+  { type: 'robot_move_to', message0: 'move to x %1 y %2 z %3 mm', args0: [{ type: 'field_number', name: 'X', value: 240, min: 0, max: 600, precision: 1 }, { type: 'field_number', name: 'Y', value: 220, min: 0, max: 400, precision: 1 }, { type: 'field_number', name: 'Z', value: 120, min: 10, max: 300, precision: 1 }], previousStatement: null, nextStatement: null, style: 'movement_blocks', tooltip: 'Moves only in the backend learning preview coordinate frame.' },
+  { type: 'robot_gripper_open', message0: 'open gripper', previousStatement: null, nextStatement: null, style: 'gripper_blocks' },
+  { type: 'robot_gripper_close', message0: 'close gripper', previousStatement: null, nextStatement: null, style: 'gripper_blocks' },
+  { type: 'robot_wait', message0: 'wait %1 seconds', args0: [{ type: 'field_number', name: 'SECONDS', value: 1, min: 0, max: 60, precision: 0.1 }], previousStatement: null, nextStatement: null, style: 'timing_blocks' }
+]);
+
+const toolbox = (actions) => ({
+  kind: 'categoryToolbox', contents: [
+    { kind: 'category', name: 'Program', categorystyle: 'start_category', contents: [{ kind: 'block', type: 'robot_start' }] },
+    ...[
+      { name: 'Arm & movement', style: 'movement_category', actions: ['arm.select', 'home', 'preview.move_xyz'] },
+      { name: 'Gripper', style: 'gripper_category', actions: ['gripper.open', 'gripper.close'] },
+      { name: 'Timing', style: 'timing_category', actions: ['wait'] }
+    ].map((category) => ({
+      kind: 'category', name: category.name, categorystyle: category.style,
+      contents: category.actions.filter((action) => actions.includes(action)).map((action) => ({ kind: 'block', type: supported[action] }))
+    })).filter((category) => category.contents.length)
+  ]
+});
+
+function theme() {
+  const style = (colour) => ({ colourPrimary: colour, colourSecondary: colour, colourTertiary: colour });
+  return Blockly.Theme.defineTheme(`vista-student-${Date.now()}`, {
+    base: Blockly.Themes.Classic,
+    blockStyles: {
+      start_blocks: style(palette.start), movement_blocks: style(palette.movement),
+      gripper_blocks: style(palette.gripper), timing_blocks: style(palette.timing)
+    },
+    categoryStyles: {
+      start_category: { colour: palette.start }, movement_category: { colour: palette.movement },
+      gripper_category: { colour: palette.gripper }, timing_category: { colour: palette.timing }
+    },
+    componentStyles: {
+      workspaceBackgroundColour: '#FBFAF8', toolboxBackgroundColour: '#FFFFFF', toolboxForegroundColour: '#17191C',
+      flyoutBackgroundColour: '#F0EFEB', flyoutForegroundColour: '#4E535A', flyoutOpacity: 1,
+      scrollbarColour: '#CECBC4', insertionMarkerColour: '#0D7369', cursorColour: '#0D7369'
+    },
+    fontStyle: { family: 'IBM Plex Sans, sans-serif', weight: '500', size: 11 }, startHats: true
+  });
+}
+
+const call = async (method, ...args) => {
+  const result = await bridge.call(method, ...args);
+  if (!result?.ok) {
+    const error = new Error(result?.error || 'Education API request failed.');
+    error.code = result?.code; error.status = result?.status;
+    if (error.code === 'SESSION_EXPIRED') window.dispatchEvent(new CustomEvent('vista:session-expired'));
+    throw error;
+  }
+  return result.data;
+};
+
+function apiErrorMessage(error) {
+  if (error?.status === 403 || error?.code === 'FORBIDDEN') return `VISTA denied this action (HTTP 403). ${error.message}`;
+  if (error?.status === 401 || error?.code === 'UNAUTHORIZED') return `VISTA requires a valid student session (HTTP 401). Sign in again. ${error.message}`;
+  return error?.message || 'VISTA request failed.';
+}
+
+function normalizeAssignment(row) {
+  return {
+    ...row,
+    id: row.classroom_assignment_id || row.id,
+    classroomAssignmentId: row.classroom_assignment_id || row.id,
+    title: row.title || row.assignment_title || 'Bài thực hành',
+    courseTitle: row.course_title || 'Khoá học',
+    instructions: row.instructions || '',
+    lessonCode: row.challenge_title || row.lesson_title || 'ASSIGNMENT',
+    attemptId: row.attempt_id || null
+  };
+}
+
+function showLoading(title, detail = 'Đang tải dữ liệu được giao…') {
+  const sheet = document.querySelector('.work-sheet');
+  if (!sheet) return null;
+  sheet.innerHTML = `<div class="sheet-container"><h1>${escapeHtml(title)}</h1><p class="faint feature-loading">${escapeHtml(detail)}</p></div>`;
+  return sheet;
+}
+
+function escapeHtml(text) {
+  return String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+async function openAssignmentPicker(kind) {
+  const title = kind === 'workspace' ? 'Blockly & Simulation' : 'SO-101 Digital Twin';
+  const sheet = showLoading(title);
+  if (!sheet) return;
+  try {
+    const raw = await call('listLabs');
+    const rows = Array.isArray(raw) ? raw : (raw.labs || []);
+    const labs = rows.map(normalizeAssignment);
+    sheet.innerHTML = '';
+    const container = document.createElement('div');
+    container.className = 'sheet-container';
+    const heading = document.createElement('div');
+    heading.className = 'view-title-row';
+    heading.innerHTML = `<div><h1>${kind === 'workspace' ? 'Blockly & Simulation' : 'SO-101 Digital Twin'}</h1><div class="view-subline">${kind === 'workspace' ? 'Select an assigned activity to load its allowed Blockly toolbox.' : 'SO-101 model · connect to attempt-scoped joint telemetry'}</div></div><span class="mode-label">${kind === 'workspace' ? 'SIMULATION' : 'READ ONLY'}</span>`;
+    const list = document.createElement('div');
+    list.className = 'feature-assignment-list';
+    if (!labs.length) {
+      list.innerHTML = '<div class="detail-panel feature-empty"><h3>No assigned labs</h3><p class="faint">Assigned activities appear here after the school publishes them.</p></div>';
+    } else {
+      labs.forEach((lab) => {
+        const button = document.createElement('button');
+        button.className = 'feature-assignment';
+        button.innerHTML = `<span class="assignment-code">${escapeHtml(lab.lessonCode)}</span><span class="assignment-title">${escapeHtml(lab.title)}</span><span class="assignment-course">${escapeHtml(lab.courseTitle)}</span><span class="assignment-open">Open →</span>`;
+        button.onclick = async () => {
+          if (kind === 'twin') await renderTwinPage(lab);
+          else await window.vistaDesktop.openWorkspace(lab, lab.attemptId);
+        };
+        list.append(button);
+      });
+    }
+    container.append(heading, list);
+    sheet.append(container);
+  } catch (error) {
+    sheet.innerHTML = `<div class="detail-panel feature-error" role="alert"><h2>Could not load assigned work</h2><p>${escapeHtml(error.message)}</p><button class="ghost" data-retry>Retry</button></div>`;
+    sheet.querySelector('[data-retry]').onclick = () => openAssignmentPicker(kind);
+  }
+}
+
+function addDefaultBlocks(workspace, allowed) {
+  const start = workspace.newBlock('robot_start');
+  start.initSvg(); start.render();
+  let parent = start;
+  if (allowed.includes('arm.select')) {
+    const arm = workspace.newBlock('robot_select_arm'); arm.initSvg(); arm.render();
+    parent.nextConnection.connect(arm.previousConnection); parent = arm;
+    if (allowed.includes('gripper.open') || allowed.includes('gripper.close')) {
+      const action = workspace.newBlock(allowed.includes('gripper.open') ? 'robot_gripper_open' : 'robot_gripper_close');
+      action.initSvg(); action.render(); arm.getInput('DO').connection.connect(action.previousConnection);
+    }
+  }
+  Blockly.svgResize(workspace);
+}
+
+function generateCanonicalProgram(workspace, assignment) {
+  const allowed = new Set(Array.isArray(assignment.allowed_blocks) ? assignment.allowed_blocks : []);
+  const symbolic = assignment.constraints?.kind === 'symbolic_program';
+  const problems = [];
+  const tops = workspace.getTopBlocks(true);
+  const starts = tops.filter((block) => block.type === 'robot_start');
+  if (starts.length !== 1) problems.push('The program needs exactly one “when program starts” block.');
+  tops.filter((block) => block.type !== 'robot_start').forEach((block) => problems.push(`Disconnected block: ${block.type}`));
+  let selectedArm = null;
+  const steps = [];
+  const walk = (first, innerArm = null) => {
+    let block = first;
+    let currentArm = innerArm;
+    while (block) {
+      if (!block.isEnabled()) { block = block.getNextBlock(); continue; }
+      const type = block.type;
+      if (type === 'robot_select_arm') {
+        currentArm = block.getFieldValue('ARM');
+        selectedArm = currentArm;
+        steps.push({ type: 'arm.select', arm: currentArm });
+        walk(block.getInputTargetBlock('DO'), currentArm);
+      } else if (type === 'robot_move_home') {
+        if (!currentArm) problems.push('Select an arm before using the home block.');
+        else steps.push({ type: 'home', arm: currentArm });
+      } else if (type === 'robot_move_to') {
+        if (!symbolic || !allowed.has('preview.move_xyz')) problems.push('This assignment does not allow learning preview coordinates.');
+        else if (!currentArm) problems.push('Select an arm before using coordinate preview.');
+        else steps.push({
+          type: 'preview.move_xyz', mode: 'learning_preview', frame: 'learning_preview_v1', arm: currentArm,
+          position: { x: Math.round(Number(block.getFieldValue('X'))), y: Math.round(Number(block.getFieldValue('Y'))), z: Math.round(Number(block.getFieldValue('Z'))) }
+        });
+      } else if (type === 'robot_wait') {
+        steps.push({ type: 'wait', durationMs: Math.round(Number(block.getFieldValue('SECONDS')) * 1000) });
+      } else if (type === 'robot_gripper_open' || type === 'robot_gripper_close') {
+        if (!currentArm) problems.push('Select an arm before using a gripper block.');
+        else steps.push({ type: type === 'robot_gripper_open' ? 'gripper.open' : 'gripper.close' });
+      } else {
+        problems.push(`Unsupported block: ${type}`);
+      }
+      block = block.getNextBlock();
+    }
+  };
+  if (starts[0]) walk(starts[0].getNextBlock());
+  workspace.getAllBlocks(false).forEach((block) => {
+    if (block.type === 'robot_start') return;
+    const allowedType = block.type === 'robot_select_arm' ? 'arm.select'
+      : block.type === 'robot_move_home' ? 'home'
+        : block.type === 'robot_move_to' ? 'preview.move_xyz'
+          : block.type === 'robot_wait' ? 'wait'
+            : block.type === 'robot_gripper_open' ? 'gripper.open'
+              : block.type === 'robot_gripper_close' ? 'gripper.close' : null;
+    if (!allowedType || !allowed.has(allowedType)) problems.push(`Block ${block.type} is not in the assigned toolbox.`);
+  });
+  if (!steps.length) problems.push('Add at least one supported action below the start block.');
+  if (steps.length > 200) problems.push('A program may contain at most 200 actions.');
+  return { valid: problems.length === 0, problems: [...new Set(problems)], program: { kind: 'robot_program', schemaVersion: 1, steps }, selectedArm };
+}
+
+async function ensureAttempt(lab, requestedAttemptId) {
+  const opened = requestedAttemptId
+    ? { id: requestedAttemptId }
+    : lab.attemptId ? { id: lab.attemptId }
+      : await call('startAttempt', lab.classroomAssignmentId || lab.id);
+  const id = opened.id || opened.attempt_id;
+  if (!id) throw new Error('VISTA did not return an attempt identifier.');
+  const attempt = await call('getAttempt', id);
+  return { ...attempt, id };
+}
+
+function renderProblemList(target, result) {
+  target.replaceChildren();
+  if (!result.problems.length) {
+    target.innerHTML = '<span class="validation-pass">✓ Program structure is valid</span>';
+    return;
+  }
+  const ul = document.createElement('ul');
+  ul.className = 'validation-list';
+  result.problems.forEach((message) => { const li = document.createElement('li'); li.textContent = message; ul.append(li); });
+  target.append(ul);
+}
+
+function renderBackendValidation(target, validation) {
+  if (!target || !validation || typeof validation !== 'object') return;
+  const row = document.createElement('div');
+  row.className = validation.valid ? 'backend-validation pass' : 'backend-validation fail';
+  row.textContent = validation.valid ? 'VISTA validation: accepted' : 'VISTA validation: needs attention';
+  const issues = Array.isArray(validation.workspaceIssues) ? validation.workspaceIssues : [];
+  if (issues.length) {
+    const list = document.createElement('ul');
+    issues.forEach((issue) => { const item = document.createElement('li'); item.textContent = String(issue); list.append(item); });
+    row.append(list);
+  }
+  target.append(row);
+}
+
+function fillVersionPicker(select, versions) {
+  if (!select) return;
+  select.replaceChildren(new Option('Choose a saved version…', ''));
+  for (const version of versions) {
+    const option = new Option(`Version ${version.version_number} · ${new Date(version.created_at || Date.now()).toLocaleString()}`, version.id);
+    select.add(option);
+  }
+  select.disabled = versions.length === 0;
+}
+
+async function renderWorkspace(lab, requestedAttemptId) {
+  const sheet = showLoading('Blockly & Simulation', `Loading ${lab.title} and checking its assignment scope…`);
+  if (!sheet) return;
+  activeWorkspace?.dispose();
+  activeWorkspace = null;
+  try {
+    const attempt = await ensureAttempt(lab, requestedAttemptId);
+    const editable = !attempt.status || attempt.status === 'in_progress';
+    const classroomAssignmentId = lab.classroomAssignmentId || lab.id;
+    const assignment = await call('assignment', classroomAssignmentId);
+    if (assignment.constraints?.kind !== 'symbolic_program') {
+      throw new Error('This assignment is not a Blockly programming assignment. Open it from its course activity instead.');
+    }
+    const existingProgram = await call('getProgram', attempt.id);
+    const savedDraft = await bridge.loadDraft(attempt.id);
+    const initialState = editable && savedDraft?.dirty && savedDraft.workspaceJson
+      ? savedDraft.workspaceJson
+      : existingProgram?.workspace_json || savedDraft?.workspaceJson || null;
+    sheet.innerHTML = `
+      <div class="sheet-container feature-workspace-page">
+        <div class="feature-title-row"><div><div class="eyebrow">PRACTICE WORKSPACE · ${escapeHtml(assignment.course_title || lab.courseTitle)}</div><h1>${escapeHtml(assignment.title || lab.title)}</h1><p class="view-subline">${escapeHtml(assignment.instructions || lab.instructions || '')}</p></div><span class="mode-label">SIMULATION · physical locked</span></div>
+        <div class="feature-toolbar"><span class="save-state" data-save-state>Draft local</span><button class="ghost" data-validate>Validate</button><button class="ghost" data-save>Save program</button><button class="ghost" data-version disabled>Create version</button><button class="ghost" data-run-local disabled>Run local simulation</button><button class="primary-action" data-run disabled>Run VISTA schematic</button><button class="ghost" data-submit disabled>Submit version</button></div>
+        <div class="version-toolbar"><label for="saved-program-version">Saved versions</label><select id="saved-program-version" data-version-picker disabled><option value="">No saved versions</option></select><button class="ghost" data-restore-version disabled>Restore into workspace</button></div>
+        <div class="feature-error" role="alert" data-error hidden></div>
+        <div class="feature-grid"><section class="feature-blockly" aria-label="VISTA Blockly programming workspace"><div data-blockly></div></section><aside class="feature-side"><section class="feature-panel"><div class="panel-heading"><h2>SO-101 Digital Twin</h2><span class="mode-label">SIMULATION</span></div><div class="twin-viewport" data-twin-canvas></div><div class="joint-state" data-joints></div><div class="telemetry-note">Simulated joint state · local preview only</div></section><section class="feature-panel"><h2>Validation & execution</h2><div data-validation class="validation-state">Validate the workspace before saving.</div><div class="schematic-result" data-result>Server schematic result will appear here after a version is saved.</div></section></aside></div>
+      </div>`;
+    const host = sheet.querySelector('[data-blockly]');
+    const allowed = assignment.allowed_blocks || [];
+    const ws = Blockly.inject(host, {
+      toolbox: editable ? toolbox(allowed) : null, readOnly: !editable, theme: theme(), renderer: 'zelos', trashcan: editable, sounds: false,
+      move: { scrollbars: true, drag: true, wheel: true }, zoom: { controls: true, wheel: false, pinch: true, startScale: 0.82, maxScale: 1.6, minScale: 0.4 },
+      grid: { spacing: 24, length: 2, colour: '#E3E1DA', snap: true }
+    });
+    if (initialState) {
+      try { Blockly.serialization.workspaces.load(initialState, ws); }
+      catch (error) { ws.clear(); throw new Error(`Saved Blockly workspace could not be loaded: ${error.message}`); }
+    } else addDefaultBlocks(ws, allowed);
+    activeWorkspace = { dispose: () => ws.dispose() };
+    const validationEl = sheet.querySelector('[data-validation]');
+    const saveState = sheet.querySelector('[data-save-state]');
+    const error = sheet.querySelector('[data-error]');
+    const versionButton = sheet.querySelector('[data-version]');
+    const runButton = sheet.querySelector('[data-run]');
+    const localRunButton = sheet.querySelector('[data-run-local]');
+    const submitButton = sheet.querySelector('[data-submit]');
+    let programRecord = existingProgram;
+    let versionRecord = null;
+    let versions = [];
+
+    const reloadVersions = async () => {
+      if (!programRecord?.id) return;
+      versions = await call('programVersions', programRecord.id);
+      fillVersionPicker(sheet.querySelector('[data-version-picker]'), Array.isArray(versions) ? versions : []);
+    };
+
+    const check = () => {
+      const result = generateCanonicalProgram(ws, assignment);
+      renderProblemList(validationEl, result);
+      renderBackendValidation(validationEl, programRecord?.validation_result);
+      versionButton.disabled = !editable || !result.valid || !programRecord;
+      runButton.disabled = !editable || !result.valid || !versionRecord;
+      localRunButton.disabled = !editable || !result.valid || !versionRecord;
+      submitButton.disabled = !editable || !versionRecord;
+      return result;
+    };
+    ws.addChangeListener((event) => {
+      if (!editable || event.isUiEvent) return;
+      saveState.textContent = 'Unsaved changes';
+      versionRecord = null;
+      check();
+      void bridge.saveDraft(attempt.id, { workspaceJson: Blockly.serialization.workspaces.save(ws), updatedAt: new Date().toISOString(), dirty: true });
+    });
+    check();
+    if (programRecord) await reloadVersions();
+    if (!editable) {
+      saveState.textContent = `Read-only · attempt ${attempt.status}`;
+      for (const selector of ['[data-validate]', '[data-save]', '[data-version]', '[data-run]', '[data-run-local]', '[data-submit]', '[data-restore-version]']) {
+        const button = sheet.querySelector(selector); if (button) button.disabled = true;
+      }
+    }
+    const demoMode = (await bridge.getCfg()).mock;
+    if (existingProgram) saveState.textContent = demoMode ? 'Saved in Demo fixture' : 'Saved to VISTA';
+
+    sheet.querySelector('[data-validate]').onclick = () => check();
+    sheet.querySelector('[data-save]').onclick = async () => {
+      const result = check();
+      if (!result.valid) return;
+      const payload = {
+        title: assignment.title || lab.title,
+        workspaceJson: Blockly.serialization.workspaces.save(ws),
+        robotProgram: result.program
+      };
+      try {
+        saveState.textContent = 'Saving…'; error.hidden = true;
+        programRecord = programRecord
+          ? await call('updateProgram', programRecord.id, { workspaceJson: payload.workspaceJson, robotProgram: payload.robotProgram })
+          : await call('createProgram', attempt.id, payload);
+        saveState.textContent = demoMode ? 'Saved in Demo fixture' : 'Saved to VISTA';
+        await bridge.saveDraft(attempt.id, { workspaceJson: payload.workspaceJson, updatedAt: new Date().toISOString(), dirty: false });
+        check();
+        renderBackendValidation(validationEl, programRecord.validation_result);
+        await reloadVersions();
+      } catch (e) { error.hidden = false; error.textContent = apiErrorMessage(e); saveState.textContent = 'Save failed'; }
+    };
+    versionButton.onclick = async () => {
+      try {
+        const checkResult = check(); if (!checkResult.valid || !programRecord) return;
+        const payload = { workspaceJson: Blockly.serialization.workspaces.save(ws), robotProgram: checkResult.program };
+        programRecord = await call('updateProgram', programRecord.id, payload);
+        versionRecord = await call('createProgramVersion', programRecord.id, { changeSummary: 'Saved from VISTA Lab Station' });
+        await bridge.saveDraft(attempt.id, { workspaceJson: payload.workspaceJson, updatedAt: new Date().toISOString(), dirty: false });
+        await reloadVersions();
+        sheet.querySelector('[data-version-picker]').value = versionRecord.id;
+        renderBackendValidation(validationEl, versionRecord.validation_result);
+        sheet.querySelector('[data-result]').textContent = demoMode
+          ? `Created Demo fixture version ${versionRecord.version_number}. No VISTA record was created; physical movement remains disabled.`
+          : `Saved immutable VISTA version ${versionRecord.version_number}. Physical movement remains disabled.`;
+        check();
+      } catch (e) { error.hidden = false; error.textContent = apiErrorMessage(e); }
+    };
+    const versionPicker = sheet.querySelector('[data-version-picker]');
+    const restoreButton = sheet.querySelector('[data-restore-version]');
+    versionPicker.addEventListener('change', () => { restoreButton.disabled = !versionPicker.value; });
+    restoreButton.onclick = () => {
+      const chosen = versions.find((version) => version.id === versionPicker.value);
+      if (!chosen?.workspace_json) { error.hidden = false; error.textContent = 'This version has no saved Blockly workspace.'; return; }
+      Blockly.serialization.workspaces.load(chosen.workspace_json, ws);
+      versionRecord = null;
+      saveState.textContent = `Restored version ${chosen.version_number} · save to create a new version`;
+      sheet.querySelector('[data-result]').textContent = 'Restored an immutable VISTA version into the editor. Save and create a new version before submitting.';
+      check();
+      renderBackendValidation(validationEl, chosen.validation_result);
+    };
+    localRunButton.onclick = async () => {
+      const result = check();
+      if (!versionRecord || !result.valid) return;
+      if (!window.confirm('Run this program on the local SIMULATION adapter? No physical robot will be controlled.')) return;
+      const resultEl = sheet.querySelector('[data-result]');
+      localRunButton.disabled = true; error.hidden = true; resultEl.textContent = 'Checking this lab attempt and running locally…';
+      try {
+        const run = await bridge.runSimulation(attempt.id, {
+          id: crypto.randomUUID(), expiresAt: Date.now() + 15000, steps: result.program.steps
+        }, 'RUN_SIMULATION');
+        resultEl.textContent = `Local Edge Runtime acknowledged ${run.commandId} · ${run.mode}. This was simulated; no physical robot was connected.`;
+      } catch (e) { error.hidden = false; error.textContent = `Local simulation: ${apiErrorMessage(e)}`; resultEl.textContent = 'No simulation execution was confirmed.'; }
+      localRunButton.disabled = !versionRecord;
+    };
+    runButton.onclick = async () => {
+      if (!versionRecord) return;
+      const resultEl = sheet.querySelector('[data-result]');
+      runButton.disabled = true; resultEl.textContent = demoMode ? 'Running the clearly labeled local preview…' : 'Creating a server schematic experiment…';
+      const program = generateCanonicalProgram(ws, assignment).program;
+      if (demoMode) {
+          await animateSimulation(sheet, program.steps);
+        resultEl.textContent = 'Local SO-101 preview finished. Demo mode did not create a VISTA schematic result.';
+        runButton.disabled = !versionRecord;
+        return;
+      }
+      try {
+        const experiment = await call('createSchematicExperiment', attempt.id, { programVersionId: versionRecord.id, executionMode: 'schematic' });
+        const started = await call('runSchematic', experiment.id);
+        let status = started;
+        const deadline = Date.now() + 45000;
+        while (!TERMINAL.includes(String(status.status || '').toLowerCase()) && Date.now() < deadline) {
+          resultEl.textContent = `VISTA schematic is ${status.status || 'running'}…`;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          status = await call('experimentStatus', experiment.id);
+        }
+        if (!TERMINAL.includes(String(status.status || '').toLowerCase())) throw new Error('VISTA schematic is still running after 45 seconds. Check the run history before retrying.');
+        const [result, events] = await Promise.all([
+          call('experimentResult', experiment.id).catch(() => null),
+          call('experimentEvents', experiment.id).catch(() => null)
+        ]);
+        const eventCount = Array.isArray(events?.items) ? events.items.length : 0;
+        resultEl.textContent = `VISTA schematic status: ${status.status} · mode: ${status.execution_mode || status.executionMode || 'schematic'}${result ? ' · server result available.' : ''}${eventCount ? ` · ${eventCount} server events.` : ''} This is not MuJoCo or physical telemetry.`;
+      } catch (e) { error.hidden = false; error.textContent = `Schematic API: ${apiErrorMessage(e)}`; resultEl.textContent = 'No terminal server result was confirmed. Check the experiment status before starting another run.'; }
+      runButton.disabled = !versionRecord;
+    };
+    submitButton.onclick = async () => {
+      if (!versionRecord) return;
+      try {
+        const submitted = await call('submitAttempt', attempt.id, { programVersionId: versionRecord.id });
+        sheet.querySelector('[data-result]').textContent = `Submission saved by VISTA: ${submitted.status || 'submitted'}.`;
+        for (const selector of ['[data-validate]', '[data-save]', '[data-version]', '[data-run]', '[data-run-local]', '[data-submit]', '[data-restore-version]']) {
+          const button = sheet.querySelector(selector); if (button) button.disabled = true;
+        }
+        ws.setIsReadOnly(true);
+      } catch (e) { error.hidden = false; error.textContent = apiErrorMessage(e); }
+    };
+    createTwin(sheet.querySelector('[data-twin-canvas]'), sheet.querySelector('[data-joints]'), true);
+    Blockly.svgResize(ws);
+  } catch (error) {
+    sheet.innerHTML = `<div class="detail-panel feature-error" role="alert"><h2>Workspace unavailable</h2><p>${escapeHtml(error.message)}</p><button class="ghost" data-back>Back to assignments</button></div>`;
+    sheet.querySelector('[data-back]').onclick = () => openAssignmentPicker('workspace');
+  }
+}
+
+async function animateSimulation(sheet, steps) {
+  const holder = sheet.querySelector('[data-twin-canvas]');
+  const record = holder && models.get(holder);
+  if (!record) return;
+  const states = sheet.querySelector('[data-joints]');
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const angle = (i + 1) * 0.28;
+    record.root.rotation.y = step.type === 'home' ? 0 : angle;
+    record.root.rotation.z = step.type === 'preview.move_xyz' ? 0.2 : 0;
+    record.jointValues = [Math.round(angle * 57.3), Math.round(Math.sin(angle) * 44), Math.round(Math.cos(angle) * 35), 0, 0, 0];
+    renderJointTable(states, record.jointValues, 'SIMULATED');
+    await new Promise((resolve) => setTimeout(resolve, 180));
+  }
+}
+
+function createTwin(host, joints, simulated) {
+  if (!host) return;
+  host.replaceChildren();
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color('#f6f5f1');
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 100);
+  camera.position.set(2.4, 2.3, 3.1);
+  camera.lookAt(0, 0.75, 0);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.setSize(host.clientWidth || 560, host.clientHeight || 340);
+  host.append(renderer.domElement);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x746f66, 2.2));
+  const key = new THREE.DirectionalLight(0xffffff, 2.5); key.position.set(3, 5, 4); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xcde7e2, 1.4); fill.position.set(-4, 2, -3); scene.add(fill);
+  const grid = new THREE.GridHelper(3.2, 24, '#b9b5ac', '#dedbd3'); grid.position.y = -0.02; scene.add(grid);
+  const root = new THREE.Group(); scene.add(root);
+  const loader = new GLTFLoader();
+  const resize = new ResizeObserver(() => {
+    const width = host.clientWidth || 560; const height = host.clientHeight || 340;
+    camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height);
+  });
+  resize.observe(host);
+  const render = () => renderer.render(scene, camera);
+  renderer.setAnimationLoop(render);
+  const record = { root, scene, camera, renderer, resize, joints, jointValues: [0, 0, 0, 0, 0, 0], simulated };
+  models.set(host, record);
+  const load = async () => {
+    try {
+      let bytes;
+      if (bridge?.loadSO101Model) bytes = await bridge.loadSO101Model();
+      else {
+        const response = await fetch('/renderer/assets/SO-Arm101.glb');
+        if (!response.ok) throw new Error('SO-101 model asset is unavailable.');
+        bytes = await response.arrayBuffer();
+      }
+      const normalized = bytes?.data ? Uint8Array.from(bytes.data) : bytes;
+      const data = normalized instanceof ArrayBuffer ? normalized : Uint8Array.from(normalized).buffer;
+      loader.parse(data, '', (gltf) => {
+        const model = gltf.scene;
+        const bounds = new THREE.Box3().setFromObject(model);
+        const size = bounds.getSize(new THREE.Vector3());
+        const scale = 1.8 / Math.max(size.x, size.y, size.z, 0.001);
+        model.scale.setScalar(scale);
+        bounds.setFromObject(model);
+        const center = bounds.getCenter(new THREE.Vector3());
+        // GLTF nodes may carry transforms, so center the entire hierarchy with
+        // a wrapper instead of applying a world-space bounds offset to its root.
+        const framing = new THREE.Group();
+        framing.position.set(-center.x, -bounds.min.y, -center.z);
+        framing.add(model);
+        root.add(framing);
+        model.traverse((node) => { if (node.isMesh) { node.castShadow = true; node.receiveShadow = true; } });
+        const note = host.parentElement?.querySelector('.telemetry-note');
+        if (note) note.textContent = simulated ? 'SO-101 asset loaded · local simulated state' : 'SO-101 model loaded · physical telemetry not connected';
+      }, (error) => showModelError(host, error));
+    } catch (error) { showModelError(host, error); addProceduralArm(root); }
+  };
+  load();
+  let down = null;
+  renderer.domElement.addEventListener('pointerdown', (event) => { down = { x: event.clientX, y: event.clientY }; renderer.domElement.setPointerCapture(event.pointerId); });
+  renderer.domElement.addEventListener('pointermove', (event) => {
+    if (!down) return;
+    root.rotation.y += (event.clientX - down.x) * 0.008;
+    root.rotation.x += (event.clientY - down.y) * 0.005;
+    down = { x: event.clientX, y: event.clientY };
+  });
+  renderer.domElement.addEventListener('pointerup', () => { down = null; });
+  renderer.domElement.addEventListener('wheel', (event) => { camera.position.multiplyScalar(event.deltaY > 0 ? 1.08 : 0.93); camera.position.clampLength(1.5, 8); }, { passive: true });
+  renderJointTable(joints, record.jointValues, simulated ? 'SIMULATED' : 'UNAVAILABLE');
+}
+
+function showModelError(host, error) {
+  let label = host.querySelector('.model-warning');
+  if (!label) { label = document.createElement('div'); label.className = 'model-warning'; host.append(label); }
+  label.textContent = `Model load issue: ${error?.message || 'unknown error'}`;
+}
+
+function addProceduralArm(root) {
+  const metal = new THREE.MeshStandardMaterial({ color: '#d7d2c7', metalness: 0.62, roughness: 0.35 });
+  const teal = new THREE.MeshStandardMaterial({ color: '#14786e', metalness: 0.45, roughness: 0.32 });
+  const segment = (a, b, radius) => {
+    const start = new THREE.Vector3(...a); const end = new THREE.Vector3(...b);
+    const direction = new THREE.Vector3().subVectors(end, start);
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.72, radius, direction.length(), 24), metal);
+    mesh.position.copy(start).add(end).multiplyScalar(0.5); mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize()); root.add(mesh);
+    const joint = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.3, 20, 16), teal); joint.position.copy(start); root.add(joint);
+  };
+  segment([0, 0, 0], [0, .48, 0], .13); segment([0, .48, 0], [.55, .9, 0], .1); segment([.55, .9, 0], [.95, .68, 0], .07);
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(.36, .38, .12, 40), metal); base.position.y = -.06; root.add(base);
+}
+
+function renderJointTable(target, values, source) {
+  if (!target) return;
+  const labels = ['J1 base', 'J2 shoulder', 'J3 elbow', 'J4 wrist pitch', 'J5 wrist roll', 'J6 gripper'];
+  target.innerHTML = labels.map((label, index) => `<div><span>${label}</span><strong>${source === 'SIMULATED' ? `${values[index] ?? 0}°` : '—'}</strong></div>`).join('');
+}
+
+async function renderTwinPage(lab = null) {
+  const sheet = showLoading('SO-101 Digital Twin', 'Checking assignment and robot viewer access…');
+  if (!sheet) return;
+  activeTwin?.dispose?.(); activeTwin = null;
+  const container = document.createElement('div'); container.className = 'sheet-container';
+  container.innerHTML = `<div class="feature-title-row"><div><div class="eyebrow">VISTA DIGITAL TWIN · READ ONLY</div><h1>${escapeHtml(lab?.title || 'SO-101 arm')}</h1><p class="view-subline">${escapeHtml(lab?.courseTitle || 'Assigned lab')} · attempt-bound joint telemetry</p></div><span class="mode-label">NO PHYSICAL COMMANDS</span></div><div class="twin-endpoint-config"><label for="twin-ws-url">Operator WebSocket endpoint</label><input id="twin-ws-url" type="url" placeholder="wss://twin.example.edu/ws/twin" autocomplete="off" spellcheck="false"><button class="ghost" data-save-endpoint>Save endpoint</button><span data-endpoint-state aria-live="polite"></span><p>Use the endpoint supplied by your VISTA operator. Credentials and tokens cannot be entered here. HTTPS deployments require wss://; ws:// is accepted only for localhost.</p></div><div class="twin-connect-toolbar"><label>Allocated robot <select data-robot disabled><option>Loading eligible robots…</option></select></label><button class="primary-action" data-connect disabled>Connect to this lab attempt</button><button class="ghost" data-reset-camera>Reset camera</button><span data-connection class="twin-connection">Disconnected</span></div><div class="feature-error" role="alert" data-twin-error hidden></div><div class="twin-page-grid"><section class="feature-panel twin-page-viewport"><div data-twin-canvas></div><div class="telemetry-note" data-twin-note>VISTA SO-101 URDF · no telemetry connected</div></section><aside class="feature-panel"><h2>Joint state</h2><div data-joints class="joint-state"></div><div class="physical-unavailable"><strong>Read-only telemetry</strong><p>Viewer authorization is requested for the authenticated student, active lab attempt, and selected allocated robot. No robot commands are sent.</p></div></aside></div>`;
+  sheet.replaceChildren(container);
+  const host = container.querySelector('[data-twin-canvas]');
+  const status = container.querySelector('[data-connection]');
+  const note = container.querySelector('[data-twin-note]');
+  const joints = container.querySelector('[data-joints]');
+  const error = container.querySelector('[data-twin-error]');
+  const connectButton = container.querySelector('[data-connect]');
+  const robotSelect = container.querySelector('[data-robot]');
+  let config = await bridge.getCfg();
+  const endpointInput = container.querySelector('#twin-ws-url');
+  endpointInput.value = config.twinWsUrl || '';
+  const endpointState = container.querySelector('[data-endpoint-state]');
+  if (config.twinWsManagedByEnvironment) endpointInput.disabled = true;
+  if (config.twinWsConfigurationError) endpointState.textContent = `Operator URL rejected: ${config.twinWsConfigurationError}`;
+  else if (config.twinWsManagedByEnvironment) endpointState.textContent = 'Managed by VISTA_TWIN_WS_URL.';
+  container.querySelector('[data-save-endpoint]').onclick = async () => {
+    try { config = await bridge.setCfg({ twinWsUrl: endpointInput.value.trim() }); endpointInput.value = config.twinWsUrl || ''; endpointState.textContent = config.twinWsManagedByEnvironment ? 'Managed by VISTA_TWIN_WS_URL.' : (config.twinWsUrl ? 'Endpoint saved.' : 'Endpoint cleared.'); }
+    catch (e) { endpointState.textContent = e.message; }
+  };
+  let viewer, socket = null, staleTimer = null, reconnectTimer = null, disposed = false;
+  const disconnect = (message = 'Disconnected') => {
+    clearTimeout(staleTimer); clearTimeout(reconnectTimer); staleTimer = reconnectTimer = null;
+    if (socket) { const current = socket; socket = null; current.onopen = current.onmessage = current.onerror = current.onclose = null; try { current.close(1000, 'viewer closed'); } catch {} }
+    viewer?.setFrame(null); joints.replaceChildren(); status.textContent = message; note.textContent = 'Telemetry disconnected';
+  };
+  const dispose = () => { disposed = true; disconnect('Disconnected'); viewer?.dispose(); if (activeTwin?.dispose === dispose) activeTwin = null; };
+  try { viewer = await mountTwinViewer(host); activeTwin = { dispose }; note.textContent = 'VISTA SO-101 URDF/STL loaded · telemetry disconnected'; }
+  catch (e) { error.hidden = false; error.textContent = `SO-101 model could not load: ${e.message}`; connectButton.disabled = true; return; }
+  container.querySelector('[data-reset-camera]').onclick = () => viewer.resetCamera();
+  try {
+    const available = await call('digitalTwinAvailability');
+    const robots = (Array.isArray(available) ? available : []).filter((r) => r.modelName === 'SO-101' && r.viewerAccess === 'authorized' && r.allocationStatus === 'allocated');
+    robotSelect.replaceChildren(...robots.map((robot) => new Option(`${robot.name} · ${robot.status}`, robot.id)));
+    robotSelect.disabled = robots.length === 0;
+    connectButton.disabled = robots.length === 0;
+    if (!robots.length) { robotSelect.replaceChildren(new Option('No allocated SO-101 available', '')); status.textContent = 'No eligible robot'; }
+  } catch (e) { robotSelect.replaceChildren(new Option('Robot access unavailable', '')); status.textContent = 'Disconnected'; error.hidden = false; error.textContent = apiErrorMessage(e); }
+  const renderFrame = (frame) => {
+    viewer.setFrame(frame);
+    const readings = frame.source_mode === 'LIVE_PHYSICAL' && frame.calibration_status === 'VERIFIED' ? frame.calibrated : frame.measured;
+    joints.innerHTML = (readings || []).map((entry) => `<div><span>${escapeHtml(entry.name)}</span><strong>${Number(entry.position).toFixed(3)} ${escapeHtml(entry.unit)}</strong></div>`).join('');
+    const age = Math.max(0, Date.now() - Date.parse(frame.measured_at));
+    status.textContent = age > 5000 || frame.connection === 'stale' ? 'Stale telemetry' : `Connected · ${frame.source_mode}`;
+    note.textContent = `${frame.source_mode} · ${frame.controller_id} · ${new Date(frame.measured_at).toLocaleTimeString()}`;
+    clearTimeout(staleTimer); staleTimer = setTimeout(() => { if (!disposed) status.textContent = 'Stale telemetry · no recent frame'; }, 5000);
+  };
+  connectButton.onclick = async () => {
+    connectButton.disabled = true; error.hidden = true; disconnect('Requesting attempt-bound access…');
+    try {
+      if (!lab?.classroomAssignmentId && !lab?.id) throw new Error('Open this viewer from an assigned lab.');
+      if (!config.twinWsUrl) throw new Error('Configure VISTA_TWIN_WS_URL or the operator WebSocket endpoint first.');
+      const attempt = await call('startAttempt', lab.classroomAssignmentId || lab.id);
+      if (!attempt?.id || attempt.status && attempt.status !== 'in_progress') throw new Error('Only an active in-progress lab attempt can open the live viewer.');
+      const scope = await call('issueTwinViewerScope', attempt.id, { robotId: robotSelect.value });
+      if (scope.attemptId !== attempt.id || scope.robotId !== robotSelect.value || !scope.token) throw new Error('VISTA returned a scope that does not match the selected attempt and robot.');
+      const protocols = [`vista.twin.${scope.token}`];
+      socket = new WebSocket(config.twinWsUrl, protocols);
+      status.textContent = 'Connecting…';
+      socket.onopen = () => { if (!disposed) status.textContent = 'Connected · awaiting telemetry'; };
+      socket.onmessage = (event) => {
+        try {
+          const raw = JSON.parse(event.data);
+          if (raw?.type === 'heartbeat') { status.textContent = 'Connected · heartbeat'; clearTimeout(staleTimer); staleTimer = setTimeout(() => { if (!disposed) status.textContent = 'Stale telemetry · heartbeat missed'; }, 15000); return; }
+          const frame = parseTwinFrame(raw, scope.robotId);
+          if (!frame) return;
+          if (frame.attempt_id && frame.attempt_id !== scope.attemptId) { disconnect('Rejected mismatched attempt telemetry'); error.hidden = false; error.textContent = 'Twin frame attempt did not match the authorized lab attempt.'; return; }
+          renderFrame(frame);
+        } catch { /* malformed server frame is ignored; it never updates the viewer */ }
+      };
+      socket.onerror = () => { if (!disposed) status.textContent = 'Connection error'; };
+      socket.onclose = (event) => {
+        if (disposed) return;
+        clearTimeout(staleTimer); viewer.setFrame(null); joints.replaceChildren(); status.textContent = event.code === 4403 ? 'Authorization expired or denied' : 'Disconnected'; note.textContent = 'Telemetry disconnected';
+        if (event.code === 4403) { error.hidden = false; error.textContent = 'VISTA closed this viewer scope. Reconnect to request a fresh attempt-bound authorization.'; }
+      };
+    } catch (e) { disconnect('Disconnected'); error.hidden = false; error.textContent = apiErrorMessage(e); }
+    finally { connectButton.disabled = robotSelect.disabled; }
+  };
+  window.addEventListener('vista:navigate', dispose, { once: true });
+  window.addEventListener('vista:session-expired', dispose, { once: true });
+  window.addEventListener('vista:logout', dispose, { once: true });
+};
+
+window.vistaDesktop = {
+  openWorkspace: (lab, attemptId) => renderWorkspace(normalizeAssignment(lab), attemptId),
+  openTwin: (lab) => renderTwinPage(lab)
+};
+
+window.addEventListener('vista:navigate', (event) => {
+  if (event.detail?.view === 'workspace') openAssignmentPicker('workspace');
+  if (event.detail?.view === 'twin') openAssignmentPicker('twin');
+});

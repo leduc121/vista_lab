@@ -1,0 +1,283 @@
+const { app, BrowserWindow, ipcMain, safeStorage } = require('electron');
+const path = require('node:path');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
+const { createClient } = require('./api');
+const { secureStorageAvailable: storageAvailable } = require('./session-security');
+const { isTrustedMainFrame, validateTwinWsUrl } = require('./ipc-security');
+const { EdgeRobotRuntime } = require('./robot-runtime');
+const { EdgeSupervisor } = require('./edge-supervisor');
+const { DeviceProvisioning } = require('./device-provisioning');
+
+const defaults = {
+  mock: process.env.VISTA_DESKTOP_DEMO === '1',
+  // Operators must choose an environment explicitly. An unset release must
+  // never silently connect a student to Production.
+  educationApi: process.env.VISTA_EDUCATION_API || '',
+  supabaseUrl: process.env.VISTA_SUPABASE_URL || '',
+  supabaseAnonKey: process.env.VISTA_SUPABASE_ANON_KEY || '',
+  twinWsUrl: '',
+  rememberedUsername: ''
+};
+const configPath = () => path.join(app.getPath('userData'), 'config.json');
+const sessionPath = () => path.join(app.getPath('userData'), 'session.enc');
+const draftsDir = () => path.join(app.getPath('userData'), 'drafts');
+const loadConfig = () => {
+  let twinWsUrl = '';
+  let twinWsConfigurationError = '';
+  const envUrl = process.env.VISTA_TWIN_WS_URL;
+  if (envUrl) {
+    try { twinWsUrl = validateTwinWsUrl(envUrl); }
+    catch (error) { twinWsConfigurationError = error.message; }
+  }
+  try {
+    const saved = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
+    let savedTwinWsUrl = '';
+    try { savedTwinWsUrl = validateTwinWsUrl(saved.twinWsUrl); } catch {}
+    return { ...defaults, rememberedUsername: typeof saved.rememberedUsername === 'string' ? saved.rememberedUsername.slice(0, 80) : '', twinWsUrl: envUrl ? twinWsUrl : savedTwinWsUrl, twinWsConfigurationError, mock: defaults.mock };
+  } catch { return { ...defaults, twinWsUrl, twinWsConfigurationError }; }
+};
+
+let config;
+let client;
+let mainWindow;
+let activeDraftOwner = null;
+const edgeRuntime = new EdgeRobotRuntime();
+let edgeSupervisor;
+let deviceProvisioning;
+
+// Work around Chromium GPU-process startup failures on affected Linux hosts.
+// This is an operator opt-in; it does not disable Electron's sandbox or
+// change renderer isolation/web security settings.
+if (process.platform === 'linux' && process.env.VISTA_ELECTRON_DISABLE_GPU === '1') {
+  app.disableHardwareAcceleration();
+}
+
+function registerHandle(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!isTrustedMainFrame(event, mainWindow, path.join(__dirname, 'renderer', 'index.html'))) throw new Error('Untrusted renderer.');
+    return handler(...args);
+  });
+}
+
+if (process.env.NODE_ENV === 'test' && process.env.VISTA_DESKTOP_TEST_USER_DATA) {
+  app.setPath('userData', path.resolve(process.env.VISTA_DESKTOP_TEST_USER_DATA));
+}
+
+function persistSession(session) {
+  if (!session || !secureStorageAvailable()) return false;
+  const encrypted = safeStorage.encryptString(JSON.stringify(session));
+  fs.writeFileSync(sessionPath(), encrypted, { mode: 0o600 });
+  return true;
+}
+
+function clearPersistedSession() {
+  try { fs.rmSync(sessionPath(), { force: true }); } catch {}
+}
+
+function readPersistedSession() {
+  if (!secureStorageAvailable()) { clearPersistedSession(); return null; }
+  try {
+    const encrypted = fs.readFileSync(sessionPath());
+    return JSON.parse(safeStorage.decryptString(encrypted));
+  } catch { clearPersistedSession(); return null; }
+}
+
+function secureStorageAvailable() {
+  return storageAvailable(safeStorage);
+}
+
+function apiError(error) {
+  return { ok: false, error: error instanceof Error ? error.message : 'Request failed', code: error?.code, status: error?.status };
+}
+
+const twinMeshFiles = new Set([
+  'base_motor_holder_so101_v1.stl', 'base_so101_v2.stl', 'sts3215_03a_v1.stl',
+  'waveshare_mounting_plate_so101_v2.stl', 'motor_holder_so101_base_v1.stl',
+  'rotation_pitch_so101_v1.stl', 'upper_arm_so101_v1.stl', 'under_arm_so101_v1.stl',
+  'motor_holder_so101_wrist_v1.stl', 'sts3215_03a_no_horn_v1.stl',
+  'wrist_roll_pitch_so101_v2.stl', 'wrist_roll_follower_so101_v1.stl',
+  'moving_jaw_so101_v1.stl'
+]);
+
+function safeId(value) {
+  const id = String(value || '');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id) && !(config?.mock && /^demo-[0-9]$/.test(id))) throw new Error('Invalid draft key.');
+  return id;
+}
+
+function draftPath(attemptId) {
+  if (!activeDraftOwner || (!config.mock && !client.getSession?.())) throw new Error('Sign in before accessing local drafts.');
+  return path.join(draftsDir(), activeDraftOwner, `${safeId(attemptId)}.json`);
+}
+
+function rememberDraftOwner(profile) {
+  const identity = profile?.id || (config.mock && profile?.studentCode);
+  activeDraftOwner = identity ? crypto.createHash('sha256').update(String(identity)).digest('hex') : null;
+}
+
+app.whenReady().then(() => {
+  config = loadConfig();
+  client = createClient(config);
+  edgeSupervisor = new EdgeSupervisor({ app, logPath: path.join(app.getPath('userData'), 'logs', 'edge-runtime.jsonl') });
+  deviceProvisioning = new DeviceProvisioning({ safeStorage, storageDir: path.join(app.getPath('userData'), 'device-identity') });
+  // The renderer can still open when a packaged runtime is absent; setup will report BLOCKED.
+  edgeSupervisor.start();
+
+  registerHandle('cfg:get', () => ({
+    mock: config.mock,
+    educationApi: config.educationApi,
+    twinWsUrl: config.twinWsUrl,
+    twinWsConfigurationError: config.twinWsConfigurationError,
+    twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL),
+    rememberedUsername: config.rememberedUsername,
+    persistentSession: secureStorageAvailable()
+  }));
+  registerHandle('edge:status', () => edgeRuntime.status());
+  const requireLocalSession = () => {
+    if (!config.mock && !client.getSession?.()) throw new Error('Sign in before using the local Edge Runtime.');
+  };
+  registerHandle('edge:diagnostics', async () => { requireLocalSession(); return edgeSupervisor.diagnostics(); });
+  registerHandle('edge:ports', async () => { requireLocalSession(); return edgeSupervisor.request('ports'); });
+  registerHandle('edge:connect', async (selection = {}) => {
+    requireLocalSession();
+    if (!selection || typeof selection.port !== 'string' || typeof selection.deviceId !== 'string') throw new Error('Choose a discovered serial port and robot ID.');
+    return edgeSupervisor.request('connect', { ...selection, mode: 'PHYSICAL ROBOT READ ONLY', confirmed: selection.confirmed === true }, 15000);
+  });
+  registerHandle('edge:disconnect', async () => { requireLocalSession(); return edgeSupervisor.request('disconnect'); });
+  registerHandle('edge:joint-state', async () => { requireLocalSession(); return edgeSupervisor.request('joint_state'); });
+  registerHandle('provisioning:status', () => deviceProvisioning.status());
+  registerHandle('provisioning:create-key', () => { requireLocalSession(); return deviceProvisioning.createEnrollmentKey(); });
+  registerHandle('edge:simulate', async (attemptId, command, confirmation) => {
+    if (!client.getSession?.() && !config.mock) throw new Error('Sign in before running a lab simulation.');
+    if (typeof attemptId !== 'string' || !attemptId || attemptId.length > 80) throw new Error('Invalid lab attempt.');
+    const attempt = await client.getAttempt(attemptId);
+    const response = await edgeRuntime.execute({
+      attempt,
+      authorization: { allowed: attempt?.status === 'in_progress', attemptId: attempt?.id, expiresAt: Date.now() + 5000 },
+      command,
+      confirmation
+    });
+    return response;
+  });
+  registerHandle('cfg:set', (patch = {}) => {
+    const activeSession = client.getSession?.();
+    const next = { ...config };
+    if (typeof patch.rememberedUsername === 'string') next.rememberedUsername = patch.rememberedUsername.slice(0, 80);
+    if (typeof patch.twinWsUrl === 'string' && process.env.VISTA_TWIN_WS_URL) throw new Error('Twin endpoint is managed by VISTA_TWIN_WS_URL in the operator environment.');
+    if (typeof patch.twinWsUrl === 'string') next.twinWsUrl = patch.twinWsUrl.trim() ? validateTwinWsUrl(patch.twinWsUrl) : '';
+    config = next;
+    fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, twinWsUrl: config.twinWsUrl }), { mode: 0o600 });
+    fs.chmodSync(configPath(), 0o600);
+    client = createClient(config);
+    if (activeSession) client.setSession(activeSession);
+    return { mock: config.mock, educationApi: config.educationApi, twinWsUrl: config.twinWsUrl, twinWsConfigurationError: config.twinWsConfigurationError, twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL), rememberedUsername: config.rememberedUsername, persistentSession: secureStorageAvailable() };
+  });
+
+  registerHandle('session:restore', async () => {
+    const saved = readPersistedSession();
+    if (!saved && config.mock) return { user: null, persistent: secureStorageAvailable() };
+    try {
+      const user = await client.restoreSession(saved);
+      if (!user) return { user: null, persistent: secureStorageAvailable() };
+      persistSession(client.getSession());
+      if (!user.passwordChangeRequired) rememberDraftOwner(user);
+      return user.passwordChangeRequired
+        ? { user: null, passwordChangeRequired: true, persistent: secureStorageAvailable() }
+        : { user, persistent: secureStorageAvailable() };
+    } catch {
+      activeDraftOwner = null;
+      clearPersistedSession();
+      await client.logout();
+      return { user: null, persistent: secureStorageAvailable(), expired: true };
+    }
+  });
+
+  registerHandle('api', async (method, ...args) => {
+    const allowed = new Set([
+      'login', 'setupStudent', 'changeStudentPassword', 'recoverStudent', 'logout', 'me', 'listLabs', 'history', 'assignment',
+      'startAttempt', 'getAttempt', 'getProgram', 'createProgram', 'updateProgram',
+      'createProgramVersion', 'submitAttempt', 'createSchematicExperiment', 'runSchematic',
+      'experimentStatus', 'experimentEvents', 'experimentResult', 'physicalEligibility',
+      'activePhysicalExecution', 'physicalStatus', 'programVersions',
+      'digitalTwinAvailability', 'issueTwinViewerScope'
+    ]);
+    if (!allowed.has(method) || typeof client[method] !== 'function') return { ok: false, error: 'Method not allowed' };
+    try {
+      const data = await client[method](...args);
+      if (method === 'submitAttempt') { edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('disconnect').catch(() => {}); }
+      if (method === 'logout' || (method === 'login' && data?.password_change_required)) activeDraftOwner = null;
+      if (method === 'login' || method === 'setupStudent') persistSession(client.getSession());
+      if (method === 'logout') { clearPersistedSession(); edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('disconnect').catch(() => {}); }
+      else if (client.getSession?.()) persistSession(client.getSession());
+      if (method === 'login' && data?.password_change_required) {
+        return { ok: true, data: { passwordChangeRequired: true, persistentSession: secureStorageAvailable() } };
+      }
+      if (method === 'changeStudentPassword') {
+        const user = await client.me(); rememberDraftOwner(user);
+        return { ok: true, data: { user, persistentSession: secureStorageAvailable() } };
+      }
+      if (method === 'login' || (method === 'setupStudent' && client.getSession())) {
+        const user = await client.me(); rememberDraftOwner(user);
+        return { ok: true, data: { user, persistentSession: secureStorageAvailable() } };
+      }
+      if (method === 'me') rememberDraftOwner(data);
+      return { ok: true, data };
+    } catch (error) {
+      if (['SESSION_EXPIRED', 'SESSION_ROTATED', 'TEMPORARY_PASSWORD_EXPIRED'].includes(error?.code) || (['login', 'setupStudent'].includes(method) && client.getSession?.())) {
+        activeDraftOwner = null;
+        edgeRuntime.revokeAuthorization();
+        void edgeSupervisor.request('disconnect').catch(() => {});
+        clearPersistedSession();
+        await client.logout();
+      }
+      return apiError(error);
+    }
+  });
+
+  registerHandle('draft:load', (assignmentId) => {
+    const file = draftPath(assignmentId);
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  });
+  registerHandle('draft:save', (assignmentId, draft) => {
+    if (!draft || typeof draft !== 'object' || JSON.stringify(draft).length > 2_000_000) throw new Error('Draft is invalid or too large.');
+    const file = draftPath(assignmentId);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify(draft), { mode: 0o600 });
+    return { saved: true };
+  });
+  registerHandle('asset:so101', () => {
+    const modelPath = path.join(__dirname, 'renderer', 'assets', 'SO-Arm101.glb');
+    return fs.readFileSync(modelPath);
+  });
+  registerHandle('asset:twin-urdf', () => fs.readFileSync(path.join(__dirname, 'renderer', 'assets', 'so101', 'urdf', 'so101_new_calib.urdf'), 'utf8'));
+  registerHandle('asset:twin-mesh', (filename) => {
+    if (typeof filename !== 'string' || !twinMeshFiles.has(filename)) throw new Error('SO-101 mesh is not in the bundled asset list.');
+    return fs.readFileSync(path.join(__dirname, 'renderer', 'assets', 'so101', 'meshes', filename));
+  });
+
+  mainWindow = new BrowserWindow({
+    width: 1320, height: 860, minWidth: 980, minHeight: 680,
+    title: 'VISTA Lab Station',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true
+    }
+  });
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file://' + path.join(__dirname, 'renderer', 'index.html'))) event.preventDefault();
+  });
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+});
+
+app.on('window-all-closed', () => app.quit());
+let edgeShutdownStarted = false;
+app.on('before-quit', (event) => {
+  if (edgeShutdownStarted || !edgeSupervisor) return;
+  event.preventDefault();
+  edgeShutdownStarted = true;
+  void edgeSupervisor.stop().finally(() => app.quit());
+});
