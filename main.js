@@ -1,10 +1,10 @@
-const { app, BrowserWindow, dialog, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { createClient } = require('./api');
 const { secureStorageAvailable: storageAvailable } = require('./session-security');
-const { isTrustedMainFrame, validateTwinWsUrl } = require('./ipc-security');
+const { isTrustedMainFrame, validateTwinWsUrl, validateEvidenceDownloadUrl } = require('./ipc-security');
 const { EdgeRobotRuntime } = require('./robot-runtime');
 const { EdgeSupervisor } = require('./edge-supervisor');
 const { DeviceProvisioning } = require('./device-provisioning');
@@ -139,15 +139,96 @@ app.whenReady().then(() => {
   const requireLocalSession = () => {
     if (!config.mock && !client.getSession?.()) throw new Error('Sign in before using the local Edge Runtime.');
   };
+  registerHandle('policy:list', async () => { requireLocalSession(); return edgeSupervisor.request('policy_list'); });
+  registerHandle('policy:inspect', async (repositoryId, revision) => { requireLocalSession(); return edgeSupervisor.request('policy_inspect', { repositoryId, revision: revision || 'main' }, 30000); });
+  registerHandle('policy:import', async (repositoryId, revision) => {
+    requireLocalSession();
+    return edgeSupervisor.request('policy_import', { repositoryId, revision: revision || 'main' }, 10 * 60_000,
+      (progress) => { if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('policy:progress', progress); });
+  });
+  registerHandle('policy:load', async (policyId, device) => { requireLocalSession(); return edgeSupervisor.request('policy_load', { policyId, device: device || 'cpu' }, 120000); });
+  registerHandle('policy:unload', async () => { requireLocalSession(); return edgeSupervisor.request('policy_unload'); });
+  registerHandle('policy:stop', async () => { requireLocalSession(); return edgeSupervisor.request('policy_stop'); });
+  registerHandle('policy:run', async (prompt) => {
+    requireLocalSession();
+    return edgeSupervisor.request('policy_run', { prompt: typeof prompt === 'string' ? prompt : '' }, 120000,
+      (frame) => { if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('policy:frame', frame); });
+  });
+  const stopFakeTeleoperation = () => {
+    for (const pairId of ['pair-a', 'pair-b']) void edgeSupervisor.request('teleop_disconnect', { pairId }).catch(() => {});
+  };
   registerHandle('edge:diagnostics', async () => { requireLocalSession(); return edgeSupervisor.diagnostics(); });
   registerHandle('edge:ports', async () => { requireLocalSession(); return edgeSupervisor.request('ports'); });
   registerHandle('edge:connect', async (selection = {}) => {
     requireLocalSession();
     if (!selection || typeof selection.port !== 'string' || typeof selection.deviceId !== 'string') throw new Error('Choose a discovered serial port and robot ID.');
-    return edgeSupervisor.request('connect', { ...selection, mode: 'PHYSICAL ROBOT READ ONLY', confirmed: selection.confirmed === true }, 15000);
+    return edgeSupervisor.request('connect', { ...selection, role: selection.role || 'follower', mode: 'PHYSICAL ROBOT READ ONLY', confirmed: selection.confirmed === true }, 15000);
   });
-  registerHandle('edge:disconnect', async () => { requireLocalSession(); return edgeSupervisor.request('disconnect'); });
-  registerHandle('edge:joint-state', async () => { requireLocalSession(); return edgeSupervisor.request('joint_state'); });
+  registerHandle('edge:disconnect', async (role) => { requireLocalSession(); return edgeSupervisor.request('disconnect', role ? { role } : {}); });
+  registerHandle('edge:joint-state', async (role = 'follower') => { requireLocalSession(); return edgeSupervisor.request('joint_state', { role }); });
+  registerHandle('edge:calibration-status', async () => { requireLocalSession(); return edgeSupervisor.request('calibration_status'); });
+  registerHandle('edge:calibration-profiles', async (role) => {
+    requireLocalSession();
+    if (!['leader', 'follower'].includes(role)) throw new Error('Select leader or follower explicitly.');
+    return edgeSupervisor.request('calibration_profiles', { role });
+  });
+  registerHandle('edge:calibration-start', async (params = {}) => {
+    requireLocalSession();
+    if (!params || typeof params !== 'object') throw new Error('Calibration selection is invalid.');
+    return edgeSupervisor.request('calibration_start', {
+      role: params.role, port: params.port, profileId: params.profileId,
+      confirmed: params.confirmed === true
+    }, 5000);
+  });
+  registerHandle('edge:calibration-complete-step', async () => { requireLocalSession(); return edgeSupervisor.request('calibration_complete_step'); });
+  registerHandle('edge:calibration-stop', async () => { requireLocalSession(); return edgeSupervisor.request('calibration_stop', {}, 10000); });
+  registerHandle('edge:teleop-status', async () => { requireLocalSession(); return edgeSupervisor.request('teleop_status'); });
+  registerHandle('edge:teleop-configure', async (pairId, confirmed) => {
+    requireLocalSession();
+    if (!['pair-a', 'pair-b'].includes(pairId)) throw new Error('Select one of the two fake simulation pairs.');
+    if (confirmed !== true) throw new Error('Fake-pair setup requires explicit operator confirmation.');
+    return edgeSupervisor.request('teleop_configure', {
+      pairId, leaderPort: `fake://${pairId}/leader`, followerPort: `fake://${pairId}/follower`, confirmed
+    });
+  });
+  registerHandle('edge:teleop-enable', async (pairId, confirmed) => {
+    requireLocalSession();
+    if (!['pair-a', 'pair-b'].includes(pairId)) throw new Error('Select one of the two fake simulation pairs.');
+    return edgeSupervisor.request('teleop_enable', { pairId, confirmed: confirmed === true });
+  });
+  registerHandle('edge:teleop-deadman', async (pairId, held, confirmed) => {
+    requireLocalSession();
+    if (!['pair-a', 'pair-b'].includes(pairId) || typeof held !== 'boolean') throw new Error('Fake pair or deadman state is invalid.');
+    return edgeSupervisor.request('teleop_deadman', { pairId, held, confirmed: confirmed === true });
+  });
+  registerHandle('edge:teleop-disable', async (pairId) => {
+    requireLocalSession();
+    if (!['pair-a', 'pair-b'].includes(pairId)) throw new Error('Select one of the two fake simulation pairs.');
+    return edgeSupervisor.request('teleop_disable', { pairId });
+  });
+  registerHandle('edge:teleop-step', async (frame = {}) => {
+    requireLocalSession();
+    if (!frame || !['pair-a', 'pair-b'].includes(frame.pairId)) throw new Error('Select a fake simulation pair.');
+    return edgeSupervisor.request('teleop_step', {
+      pairId: frame.pairId, leader: frame.leader, sequence: frame.sequence,
+      timestamp: frame.timestamp, deadmanHeld: frame.deadmanHeld === true
+    }, 1000);
+  });
+  registerHandle('edge:teleop-estop', async (pairId) => {
+    requireLocalSession();
+    if (!['pair-a', 'pair-b'].includes(pairId)) throw new Error('Select a fake simulation pair.');
+    return edgeSupervisor.request('teleop_estop', { pairId });
+  });
+  registerHandle('edge:teleop-reset', async (pairId, confirmed) => {
+    requireLocalSession();
+    if (!['pair-a', 'pair-b'].includes(pairId)) throw new Error('Select a fake simulation pair.');
+    return edgeSupervisor.request('teleop_reset', { pairId, confirmed: confirmed === true });
+  });
+  registerHandle('edge:teleop-disconnect', async (pairId) => {
+    requireLocalSession();
+    if (!['pair-a', 'pair-b'].includes(pairId)) throw new Error('Select a fake simulation pair.');
+    return edgeSupervisor.request('teleop_disconnect', { pairId });
+  });
   registerHandle('simulation:select-model', async () => {
     requireLocalSession();
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -180,6 +261,14 @@ app.whenReady().then(() => {
   registerHandle('provisioning:create-key', () => { requireLocalSession(); return deviceProvisioning.createEnrollmentKey(); });
   registerHandle('provisioning:enroll', async (enrollmentCode) => { requireLocalSession(); if (!config.deviceProvisioningEnabled) throw new Error('Device provisioning is disabled by operator policy.'); return deviceProvisioning.enroll(enrollmentCode); });
   registerHandle('provisioning:refresh', async () => { requireLocalSession(); if (!config.deviceProvisioningEnabled) throw new Error('Device provisioning is disabled by operator policy.'); return deviceProvisioning.authenticate(); });
+  registerHandle('evidence:open', async (experimentId, artifactId) => {
+    requireLocalSession();
+    if (config.mock) throw new Error('Evidence downloads require the real Education API.');
+    const result = await client.experimentArtifactDownload(experimentId, artifactId);
+    if (result?.status !== 'available' || typeof result.url !== 'string') throw new Error('This evidence file is not currently available.');
+    await shell.openExternal(validateEvidenceDownloadUrl(result.url));
+    return { status: 'opened' };
+  });
   registerHandle('edge:simulate', async (attemptId, command, confirmation) => {
     if (!client.getSession?.() && !config.mock) throw new Error('Sign in before running a lab simulation.');
     if (typeof attemptId !== 'string' || !attemptId || attemptId.length > 80) throw new Error('Invalid lab attempt.');
@@ -226,7 +315,7 @@ app.whenReady().then(() => {
 
   registerHandle('api', async (method, ...args) => {
     const allowed = new Set([
-      'login', 'setupStudent', 'changeStudentPassword', 'recoverStudent', 'logout', 'me', 'listLabs', 'history', 'assignment',
+      'login', 'setupStudent', 'changeStudentPassword', 'recoverStudent', 'logout', 'me', 'listLabs', 'enrollments', 'learningPath', 'history', 'assignment',
       'startAttempt', 'getAttempt', 'getProgram', 'createProgram', 'updateProgram',
       'createProgramVersion', 'submitAttempt', 'createSchematicExperiment', 'runSchematic',
       'experimentStatus', 'experimentEvents', 'experimentResult', 'physicalEligibility',
@@ -239,7 +328,7 @@ app.whenReady().then(() => {
       if (method === 'submitAttempt') { edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('cancel_simulation').catch(() => {}); void edgeSupervisor.request('disconnect').catch(() => {}); }
       if (method === 'logout' || (method === 'login' && data?.password_change_required)) activeDraftOwner = null;
       if (method === 'login' || method === 'setupStudent') persistSession(client.getSession());
-      if (method === 'logout') { clearPersistedSession(); edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('cancel_simulation').catch(() => {}); void edgeSupervisor.request('disconnect').catch(() => {}); }
+      if (method === 'logout') { clearPersistedSession(); edgeRuntime.revokeAuthorization(); void edgeSupervisor.request('cancel_simulation').catch(() => {}); void edgeSupervisor.request('disconnect').catch(() => {}); stopFakeTeleoperation(); }
       else if (client.getSession?.()) persistSession(client.getSession());
       if (method === 'login' && data?.password_change_required) {
         return { ok: true, data: { passwordChangeRequired: true, persistentSession: secureStorageAvailable() } };
@@ -260,6 +349,7 @@ app.whenReady().then(() => {
         edgeRuntime.revokeAuthorization();
         void edgeSupervisor.request('cancel_simulation').catch(() => {});
         void edgeSupervisor.request('disconnect').catch(() => {});
+        stopFakeTeleoperation();
         clearPersistedSession();
         await client.logout();
       }

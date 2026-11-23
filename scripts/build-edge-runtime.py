@@ -26,6 +26,10 @@ def main() -> int:
         "--name", "vista-edge-runtime", "--distpath", str(DIST.parent),
         "--workpath", str(WORK), "--specpath", str(WORK), "--paths", str(ROOT),
         "--hidden-import", "edge.mqtt_transport",
+        # MuJoCo selects its headless EGL backend dynamically from MUJOCO_GL.
+        # PyInstaller cannot infer this import, and the packaged Electron app
+        # sets MUJOCO_GL=egl on Linux for policy camera observations.
+        "--hidden-import", "OpenGL.platform.egl",
         "--collect-all", "mujoco", "--collect-all", "serial",
         "--collect-all", "paho", str(ROOT / "edge" / "runtime.py"),
     ]

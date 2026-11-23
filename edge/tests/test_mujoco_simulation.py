@@ -1,7 +1,10 @@
 import importlib.util
+import os
 import time
 import unittest
 from pathlib import Path
+
+os.environ.setdefault("MUJOCO_GL", "egl")
 
 from edge.mujoco_simulation import MuJoCoSimulation
 
@@ -25,6 +28,27 @@ class MuJoCoSimulationTests(unittest.TestCase):
         self.assertEqual(status["engine"], "MuJoCo")
         self.assertEqual(status["model"], "scene.xml")
         self.assertFalse(status["motionEnabled"])
+
+    def test_policy_observation_renders_declared_virtual_camera_and_six_joint_state(self):
+        class Feature:
+            def __init__(self, shape): self.shape = shape
+        observation = self.simulation.policy_observation({
+            "observation.state": Feature((6,)),
+            "observation.images.front": Feature((3, 64, 80)),
+        })
+        self.assertEqual(len(observation["observation.state"]), 6)
+        self.assertEqual(observation["observation.images.front"].shape, (64, 80, 3))
+        self.assertEqual(observation["observation.images.front"].dtype.name, "uint8")
+
+    def test_policy_action_is_bounds_checked_then_applied_to_mujoco_only(self):
+        frames = []
+        result = self.simulation.execute_policy_action([0, -0.55, 1.05, -0.5, 0, -0.1], frames.append)
+        self.assertEqual(result["engine"], "MuJoCo")
+        self.assertFalse(result["motionEnabled"])
+        self.assertGreater(len(frames), 0)
+        self.assertEqual(frames[-1]["controller_id"], "local-policy-mujoco")
+        with self.assertRaisesRegex(ValueError, "outside MuJoCo actuator limits"):
+            self.simulation.execute_policy_action([999, 0, 0, 0, 0, 0])
 
     def test_executes_allowlisted_program_and_emits_measured_physics_frames(self):
         steps = [

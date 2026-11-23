@@ -1,0 +1,8 @@
+# Optional isolated inference environment; keep policy dependencies out of the
+# default Edge Runtime until the checkpoint and packaged runtime are accepted.
+-r requirements-edge.txt
+# 0.6.2 is not published on PyPI; 0.6.1 is the verified 0.6.x release.
+lerobot[smolvla]==0.6.1
+numpy>=2.0,<2.3
+torch>=2.7,<2.12
+torchvision>=0.22,<0.27

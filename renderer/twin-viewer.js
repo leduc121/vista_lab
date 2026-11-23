@@ -77,7 +77,7 @@ async function readMesh(filename) {
   return response.arrayBuffer();
 }
 
-export async function mountTwinViewer(host) {
+export async function mountTwinViewer(host, onDisposeReady = () => {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#111718');
   const camera = new THREE.PerspectiveCamera(42, 1, 0.005, 100);
@@ -110,6 +110,7 @@ export async function mountTwinViewer(host) {
   scene.add(axes);
 
   let disposed = false;
+  let released = false;
   let latest = null;
   let robot = null;
   let targets = {};
@@ -128,7 +129,7 @@ export async function mountTwinViewer(host) {
     const cacheKey = `${filename}:${material.name}`;
     if (meshCache.has(cacheKey)) { done(meshCache.get(cacheKey).clone()); manager.itemEnd(uri); return; }
     void readMesh(filename).then((bytes) => {
-      if (disposed) return;
+      if (disposed) { manager.itemEnd(uri); return; }
       const geometry = new STLLoader(manager).parse(toArrayBuffer(bytes));
       const displayMaterial = new THREE.MeshStandardMaterial({
         color: material.name === '3d_printed' ? '#f2f2ed' : '#34383a',
@@ -149,6 +150,18 @@ export async function mountTwinViewer(host) {
     camera.updateProjectionMatrix();
     renderer.setSize(width, height);
   });
+  const release = () => {
+    if (released) return;
+    released = true;
+    disposed = true;
+    resize.disconnect();
+    controls.dispose();
+    renderer.setAnimationLoop(null);
+    renderer.dispose();
+    meshCache.forEach((mesh) => { mesh.geometry.dispose(); mesh.material.dispose(); });
+    scene.clear();
+    host.replaceChildren();
+  };
   resize.observe(host);
   let lastFrameTime = performance.now();
   renderer.setAnimationLoop((now) => {
@@ -179,10 +192,12 @@ export async function mountTwinViewer(host) {
     controls.update();
     renderer.render(scene, camera);
   });
+  onDisposeReady(release);
 
   try {
+    if (disposed) return { setFrame() {}, resetCamera() {}, dispose: release };
     const urdf = await readUrdf();
-    if (disposed) return { setFrame() {}, dispose() {} };
+    if (disposed) return { setFrame() {}, resetCamera() {}, dispose: release };
     robot = loader.parse(urdf);
     robot.name = 'VISTA SO-101 URDF';
     for (const [name, specification] of Object.entries(JOINTS)) {
@@ -195,11 +210,7 @@ export async function mountTwinViewer(host) {
     scene.add(robot);
     await meshLoading;
   } catch (error) {
-    renderer.setAnimationLoop(null);
-    resize.disconnect();
-    controls.dispose();
-    renderer.dispose();
-    host.replaceChildren();
+    release();
     throw error;
   }
 
@@ -224,19 +235,11 @@ export async function mountTwinViewer(host) {
   return {
     setFrame,
     resetCamera() {
+      if (disposed) return;
       camera.position.copy(initialCamera);
       controls.target.copy(initialTarget);
       controls.update();
     },
-    dispose() {
-      disposed = true;
-      resize.disconnect();
-      controls.dispose();
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      meshCache.forEach((mesh) => { mesh.geometry.dispose(); mesh.material.dispose(); });
-      scene.clear();
-      host.replaceChildren();
-    }
+    dispose: release
   };
 }

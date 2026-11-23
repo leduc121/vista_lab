@@ -1,17 +1,21 @@
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const executable = process.argv[2];
 if (!executable || !fs.existsSync(executable) || !process.env.DISPLAY) {
   console.error('Usage: xvfb-run -a node scripts/verify-packaged-launch.cjs <packaged-executable>');
   process.exit(2);
 }
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'vista-packaged-launch-profile-'));
+process.on('exit', () => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch {} });
 
 const env = { ...process.env,
   VISTA_DESKTOP_DEMO: '1',
   VISTA_ELECTRON_DISABLE_GPU: '1',
   NODE_ENV: 'test',
-  VISTA_DESKTOP_TEST_USER_DATA: '/tmp/vista-packaged-launch-profile'
+  VISTA_DESKTOP_TEST_USER_DATA: profile
 };
 delete env.DEBUG; // AppImage AppRun prints its entire environment when DEBUG is set.
 delete env.ELECTRON_RUN_AS_NODE;

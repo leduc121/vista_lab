@@ -93,6 +93,7 @@ async function runTemporaryPasswordAcceptance() {
 }
 
 (async () => {
+  const contractFailures = [];
   const temporaryPasswordPassed = await runTemporaryPasswordAcceptance();
   let first = await login(env.VISTA_TEST_SCHOOL_CODE, env.VISTA_TEST_STUDENT_CODE, env.VISTA_TEST_STUDENT_PASSWORD);
   assert.notEqual(first.password_change_required, true, 'standard integration student must not be a temporary-password account');
@@ -115,13 +116,35 @@ async function runTemporaryPasswordAcceptance() {
 
   const profileUrl = new URL('me', ensureApiSlash(api));
   const learningUrl = new URL('me/learning', ensureApiSlash(api));
-  const [profile, learning] = await Promise.all([request(profileUrl, first.access_token), request(learningUrl, first.access_token)]);
+  const enrollmentsUrl = new URL('me/enrollments', ensureApiSlash(api));
+  const learningPathUrl = new URL('me/learning-path', ensureApiSlash(api));
+  const [profile, learning, enrollments, learningPath] = await Promise.all([
+    request(profileUrl, first.access_token), request(learningUrl, first.access_token),
+    request(enrollmentsUrl, first.access_token), request(learningPathUrl, first.access_token)
+  ]);
   assert.equal(profile.ok, true, `/me failed with HTTP ${profile.status}`);
   assert.equal(learning.ok, true, `/me/learning failed with HTTP ${learning.status}`);
+  assert.equal(enrollments.ok, true, `/me/enrollments failed with HTTP ${enrollments.status}`);
+  assert.equal(learningPath.ok, true, `/me/learning-path failed with HTTP ${learningPath.status}`);
   await profile.arrayBuffer();
   const assignments = await json(learning);
+  const enrollmentRows = await json(enrollments);
+  const coursePath = await json(learningPath);
+  assert.ok(Array.isArray(assignments), '/me/learning must return the assigned-lab array');
+  for (const row of assignments) {
+    assert.ok(typeof row.classroom_assignment_id === 'string' && typeof row.title === 'string', 'assigned lab requires its real assignment ID and title');
+    assert.ok(typeof row.course_title === 'string' && typeof row.status === 'string', 'assigned lab requires its course and server status');
+    assert.ok(Object.hasOwn(row, 'due_at'), 'assigned lab response must include due_at (null is valid)');
+  }
+  assert.ok(Array.isArray(enrollmentRows) || Array.isArray(enrollmentRows?.items), '/me/enrollments must return enrollment rows');
+  assert.ok(Array.isArray(coursePath?.courses), '/me/learning-path must return enrolled course progress');
+  for (const course of coursePath.courses) {
+    assert.ok(typeof course.id === 'string' && typeof course.title === 'string', 'course progress requires server course identity and title');
+    assert.ok(Number.isFinite(course.progressPercent) && course.progressPercent >= 0 && course.progressPercent <= 100, 'course progress must be server-reported in the 0–100 range');
+  }
 
   let ownedAttemptId = env.VISTA_TEST_ATTEMPT_ID;
+  let ownedProgramId;
   let ownedVersionId;
   let twinConnected = false;
   if (env.VISTA_TEST_ENABLE_MUTATIONS === '1') {
@@ -137,6 +160,10 @@ async function runTemporaryPasswordAcceptance() {
     const attempt = await json(started);
     assert.match(attempt.id || '', /^[0-9a-f-]{36}$/i, 'attempt creation response missing UUID id');
     ownedAttemptId = attempt.id;
+    const resumedResponse = await request(new URL(`classroom-assignments/${assignmentId}/attempts`, ensureApiSlash(api)), first.access_token, 'POST', {});
+    assert.equal(resumedResponse.ok, true, `attempt resume failed with HTTP ${resumedResponse.status}`);
+    const resumedAttempt = await json(resumedResponse);
+    assert.equal(resumedAttempt.id, ownedAttemptId, 'start/resume created a duplicate active attempt');
     const attemptRead = await request(new URL(`me/attempts/${ownedAttemptId}`, ensureApiSlash(api)), first.access_token);
     assert.equal(attemptRead.ok, true, `attempt read failed with HTTP ${attemptRead.status}`);
     await attemptRead.arrayBuffer();
@@ -147,6 +174,7 @@ async function runTemporaryPasswordAcceptance() {
     assert.equal(created.ok, true, `program save/validation failed with HTTP ${created.status}`);
     const program = await json(created);
     assert.match(program.id || '', /^[0-9a-f-]{36}$/i, 'program response missing UUID id');
+    ownedProgramId = program.id;
     assert.equal(program.validation_result?.valid, true, 'server did not validate the saved program');
     const reloaded = await request(new URL(`me/attempts/${ownedAttemptId}/program`, ensureApiSlash(api)), first.access_token);
     assert.equal(reloaded.ok, true, `program reload failed with HTTP ${reloaded.status}`);
@@ -190,9 +218,16 @@ async function runTemporaryPasswordAcceptance() {
         request(new URL(`me/experiments/${experiment.id}/events`, ensureApiSlash(api)), first.access_token),
         request(new URL(`me/experiments/${experiment.id}/result`, ensureApiSlash(api)), first.access_token)
       ]);
-      assert.ok(events.ok || events.status === 404, `schematic events returned HTTP ${events.status}`);
-      assert.ok(result.ok || result.status === 404, `schematic result returned HTTP ${result.status}`);
-      await events.arrayBuffer(); await result.arrayBuffer();
+      assert.equal(String(status.status).toLowerCase(), 'succeeded', `schematic did not succeed: ${status.status}`);
+      if (!events.ok) {
+        const failure = `GET /me/experiments/:experimentId/events returned HTTP ${events.status}`;
+        contractFailures.push(failure);
+        console.error(`KNOWN BACKEND CONTRACT FAILURE: ${failure}; continuing independent result, submission, and persistence checks.`);
+      }
+      assert.equal(result.ok, true, `schematic result returned HTTP ${result.status}`);
+      const resultRows = await json(result);
+      assert.ok(Array.isArray(resultRows) && resultRows.length > 0, 'successful schematic result was not persisted');
+      await events.arrayBuffer();
     }
 
     if (env.VISTA_TEST_ENABLE_TWIN === '1') {
@@ -222,7 +257,16 @@ async function runTemporaryPasswordAcceptance() {
     assert.equal(submitted.program_version_id, ownedVersionId, 'submission did not pin the selected immutable version');
     const finalAttempt = await request(new URL(`me/attempts/${ownedAttemptId}`, ensureApiSlash(api)), first.access_token);
     assert.equal(finalAttempt.ok, true, `submitted attempt read failed with HTTP ${finalAttempt.status}`);
-    assert.ok(['submitted', 'evaluated'].includes((await json(finalAttempt)).status), 'attempt remained editable after submission');
+    const finalAttemptData = await json(finalAttempt);
+    assert.ok(['submitted', 'evaluated'].includes(finalAttemptData.status), 'attempt remained editable after submission');
+    const webLearningResponse = await request(new URL('me/learning', ensureApiSlash(api)), first.access_token);
+    assert.equal(webLearningResponse.ok, true, `Web LMS learning projection failed with HTTP ${webLearningResponse.status}`);
+    const webLearningRows = await json(webLearningResponse);
+    const webLearningAttempt = webLearningRows.find((row) => row.classroom_assignment_id === assignmentId);
+    assert.ok(webLearningAttempt, 'submitted assignment is absent from the same student /me/learning projection used by Web LMS');
+    assert.equal(webLearningAttempt.attempt_id, ownedAttemptId, 'Web LMS learning projection references a different attempt');
+    assert.ok(['submitted', 'evaluated'].includes(webLearningAttempt.attempt_status || webLearningAttempt.status), 'Web LMS learning projection did not reflect submission');
+    if (finalAttemptData.score !== undefined && finalAttemptData.score !== null) assert.equal(webLearningAttempt.score, finalAttemptData.score, 'Web LMS learning projection score differs from the submitted attempt');
     const afterSubmitUpdate = await request(new URL(`me/programs/${program.id}`, ensureApiSlash(api)), first.access_token, 'PATCH', { workspaceJson, robotProgram });
     assert.ok([403, 404, 409].includes(afterSubmitUpdate.status), `submitted program remained writable: HTTP ${afterSubmitUpdate.status}`);
     await afterSubmitUpdate.arrayBuffer();
@@ -234,7 +278,8 @@ async function runTemporaryPasswordAcceptance() {
   }
 
   const other = await login(env.VISTA_TEST_OTHER_SCHOOL_CODE, env.VISTA_TEST_OTHER_STUDENT_CODE, env.VISTA_TEST_OTHER_STUDENT_PASSWORD);
-  await expectDenied(await request(new URL(`me/attempts/${encodeURIComponent(env.VISTA_TEST_ATTEMPT_ID)}`, ensureApiSlash(api)), other.access_token), 'cross-school attempt read');
+  const denialAttemptId = env.VISTA_TEST_ENABLE_MUTATIONS === '1' ? ownedAttemptId : env.VISTA_TEST_ATTEMPT_ID;
+  await expectDenied(await request(new URL(`me/attempts/${encodeURIComponent(denialAttemptId)}`, ensureApiSlash(api)), other.access_token), 'cross-school attempt read');
   if (env.VISTA_TEST_ENABLE_MUTATIONS === '1') {
     await expectDenied(await request(new URL(`classroom-assignments/${env.VISTA_TEST_ASSIGNMENT_ID}`, ensureApiSlash(api)), other.access_token), 'cross-school assignment detail');
     await expectDenied(await request(new URL(`me/attempts/${ownedAttemptId}`, ensureApiSlash(api)), other.access_token), 'foreign attempt read');
@@ -249,6 +294,10 @@ async function runTemporaryPasswordAcceptance() {
   });
   assert.equal(logout.ok, true, `Supabase logout failed with HTTP ${logout.status}`);
   await logout.arrayBuffer();
+  if (ownedAttemptId && ownedProgramId && ownedVersionId) {
+    // IDs are test-scoped UUIDs only; the runner uses them for independent DB readback.
+    console.log(`VISTA_ACCEPTANCE_IDS ${JSON.stringify({ attemptId: ownedAttemptId, programId: ownedProgramId, versionId: ownedVersionId })}`);
+  }
   const loggedOutRefresh = await fetch(new URL('auth/v1/token?grant_type=refresh_token', `${supabase.origin}/`), {
     method: 'POST', headers: { 'Content-Type': 'application/json', apikey: env.VISTA_TEST_SUPABASE_ANON_KEY },
     body: JSON.stringify({ refresh_token: first.refresh_token }), signal: AbortSignal.timeout(12000)
@@ -256,9 +305,11 @@ async function runTemporaryPasswordAcceptance() {
   assert.equal(loggedOutRefresh.ok, false, 'logged-out refresh token remained usable');
   await loggedOutRefresh.arrayBuffer();
 
-  console.log(`Isolated integration checks passed: ${temporaryPasswordPassed ? 'temporary login/change/refresh/session rotation, ' : ''}login, Supabase refresh, /me, /me/learning (${Array.isArray(assignments) ? assignments.length : 'response'} assignment payload), and cross-school attempt denial${ownedVersionId ? ', Blockly save/update/version/history/submit and foreign submission denial' : ''}${env.VISTA_TEST_ENABLE_SIMULATION === '1' ? ', schematic experiment lifecycle' : ''}${twinConnected ? ', attempt-bound Twin scope and WebSocket connect' : ''}.`);
+  const completedChecks = `${temporaryPasswordPassed ? 'temporary login/change/refresh/session rotation, ' : ''}login, Supabase refresh, /me, /me/learning (${Array.isArray(assignments) ? assignments.length : 'response'} assignment payload), course enrollments/progress, and cross-school attempt denial${ownedVersionId ? ', attempt start/resume, Blockly save/update/version/history/submit, Web LMS learning projection refresh, and foreign submission denial' : ''}${env.VISTA_TEST_ENABLE_SIMULATION === '1' ? ', persisted schematic experiment result' : ''}${twinConnected ? ', attempt-bound Twin scope and WebSocket connect' : ''}.`;
+  console.log(`Isolated integration checks ${contractFailures.length ? 'completed with reported contract failures' : 'passed'}: ${completedChecks}`);
   if (!temporaryPasswordPassed) console.log('Temporary-password acceptance skipped: provide a fresh disposable account using VISTA_TEST_TEMP_* variables.');
   if (env.VISTA_TEST_ENABLE_TWIN !== '1') console.log('Twin scope/WebSocket acceptance skipped: set VISTA_TEST_ENABLE_TWIN=1 and isolated test-owned robot/endpoint variables.');
+  if (contractFailures.length) throw new Error(`Acceptance contract failures: ${contractFailures.join('; ')}`);
 })().catch((error) => {
   console.error(`Isolated integration acceptance failed: ${error.message}`);
   process.exitCode = 1;

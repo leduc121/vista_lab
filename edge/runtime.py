@@ -15,10 +15,18 @@ import math
 from typing import Any, Protocol
 try:
     from edge.mujoco_simulation import MuJoCoSimulation
+    from edge.calibration import CalibrationWorkflow
+    from edge.serial_ownership import SerialPortOwner
+    from edge.teleoperation import Teleoperation
+    from edge.policy_manager import PolicyManager
 except ModuleNotFoundError:
     # Support the documented direct source invocation (`python edge/runtime.py`)
     # as well as package imports and the frozen PyInstaller entry point.
     from mujoco_simulation import MuJoCoSimulation
+    from calibration import CalibrationWorkflow
+    from serial_ownership import SerialPortOwner
+    from teleoperation import Teleoperation
+    from policy_manager import PolicyManager
 
 RUNTIME_VERSION = "0.1.0"
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
@@ -65,11 +73,15 @@ class LeRobotSO101Adapter:
 
     mode = "PHYSICAL ROBOT READ ONLY"
 
-    def __init__(self) -> None:
+    def __init__(self, role: str = "follower") -> None:
+        if role not in {"leader", "follower"}:
+            raise ValueError("SO-101 role must be leader or follower.")
+        self.role = role
         self.robot = None
         self.port: str | None = None
         self.device_id: str | None = None
         self.calibration_ready = False
+        self._serial_owner: SerialPortOwner | None = None
 
     @staticmethod
     def ports() -> list[dict[str, Any]]:
@@ -101,6 +113,7 @@ class LeRobotSO101Adapter:
             "motionEnabled": False,
             "port": self.port,
             "deviceId": self.device_id,
+            "role": self.role,
         }
 
     def connect(self, port: str, device_id: str) -> dict[str, Any]:
@@ -113,9 +126,19 @@ class LeRobotSO101Adapter:
             raise ValueError("Robot ID must contain 1 to 64 printable characters.")
         if importlib.util.find_spec("lerobot") is None:
             raise RuntimeError("LeRobot is unavailable in this Edge Runtime.")
-        from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+        owner = SerialPortOwner(port, f"{self.role}-connection").acquire()
+        try:
+            if self.role == "leader":
+                from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 
-        candidate = SO101Follower(SO101FollowerConfig(port=port, id=device_id, use_degrees=True, max_relative_target=1.0))
+                candidate = SO101Leader(SO101LeaderConfig(port=port, id=device_id))
+            else:
+                from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+
+                candidate = SO101Follower(SO101FollowerConfig(port=port, id=device_id, use_degrees=True, max_relative_target=1.0))
+        except Exception:
+            owner.release()
+            raise
         # Existing CHECKIK behavior passes calibrate=False to avoid starting a
         # console calibration that can wait indefinitely or alter device state.
         try:
@@ -127,10 +150,12 @@ class LeRobotSO101Adapter:
                     candidate.disconnect()
             except Exception:
                 logger.exception("failed SO-101 connection cleanup")
+            owner.release()
             raise
         self.robot = candidate
         self.port = port
         self.device_id = device_id
+        self._serial_owner = owner
         return self.status()
 
     def disconnect(self) -> dict[str, Any]:
@@ -142,6 +167,9 @@ class LeRobotSO101Adapter:
             self.robot = None
             self.calibration_ready = False
             self.port = self.device_id = None
+            if self._serial_owner is not None:
+                self._serial_owner.release()
+                self._serial_owner = None
         return self.status()
 
     def joint_state(self) -> dict[str, Any]:
@@ -157,10 +185,15 @@ class LeRobotSO101Adapter:
 
 
 class EdgeRuntime:
-    def __init__(self, *, simulated: Adapter | None = None, physical: Adapter | None = None) -> None:
+    def __init__(self, *, simulated: Adapter | None = None, physical: Adapter | None = None,
+                 leader: Adapter | None = None) -> None:
         self.simulated = simulated or SimulatedSO101()
         self.physical = physical or LeRobotSO101Adapter()
+        self.leader = leader or LeRobotSO101Adapter("leader")
+        self.calibration = CalibrationWorkflow(port_provider=self.physical.ports)
+        self.teleoperation = Teleoperation()
         self.mujoco = MuJoCoSimulation()
+        self.policies = PolicyManager()
         self.active = "SIMULATION"
         self._stop = threading.Event()
 
@@ -176,9 +209,49 @@ class EdgeRuntime:
                                 "pyserial": importlib.util.find_spec("serial") is not None,
                                 "mujoco": importlib.util.find_spec("mujoco") is not None},
                     "simulation": self.mujoco.status()}
+        if method == "policy_list":
+            return {"items": self.policies.list(), "activePolicyId": self.policies._active}
+        if method == "policy_inspect":
+            return self.policies.inspect(params.get("repositoryId"), params.get("revision", "main"))
+        if method == "policy_import":
+            return self.policies.import_model(params.get("repositoryId"), params.get("revision", "main"), progress=on_event)
+        if method == "policy_load":
+            return self.policies.load(params.get("policyId"), params.get("device", "cpu"))
+        if method == "policy_unload":
+            return self.policies.unload()
+        if method == "policy_stop":
+            return self.policies.stop()
+        if method == "policy_run":
+            if any(pair.get("deadmanHeld") for pair in self.teleoperation.status().values()):
+                raise RuntimeError("Policy inference is blocked while motion controls are active.")
+            observation = self.mujoco.policy_observation(self.policies.active_input_features())
+            inference = self.policies.run(
+                observation, params.get("prompt", ""),
+                execute=lambda action: self.mujoco.execute_policy_action(action["jointPositions"], emit=on_event),
+            )
+            return {"policyId": inference["policyId"], "promptUsed": inference["promptUsed"],
+                    "action": inference["action"], "simulation": inference["simulation"], "motionEnabled": False}
         if method == "status":
-            return {"activeMode": self.active, "simulation": self.mujoco.status(), "robotSimulation": self.simulated.status(), "physical": self.physical.status(),
-                    "motionEnabled": False}
+            return {"activeMode": self.active, "simulation": self.mujoco.status(), "robotSimulation": self.simulated.status(), "physical": self.physical.status(), "leader": self.leader.status(),
+                    "motionEnabled": False, "teleoperation": self.teleoperation.status()}
+        if method == "teleop_status":
+            return self.teleoperation.status()
+        if method == "teleop_configure":
+            return self.teleoperation.configure(params.get("pairId"), params.get("leaderPort"), params.get("followerPort"), params.get("confirmed") is True)
+        if method == "teleop_enable":
+            return self.teleoperation.enable(params.get("pairId"), params.get("confirmed") is True)
+        if method == "teleop_deadman":
+            return self.teleoperation.set_deadman(params.get("pairId"), params.get("held"), params.get("confirmed") is True)
+        if method == "teleop_disable":
+            return self.teleoperation.disable(params.get("pairId"))
+        if method == "teleop_step":
+            return self.teleoperation.step(params.get("pairId"), params.get("leader"), params.get("sequence"), params.get("timestamp"), params.get("deadmanHeld"))
+        if method == "teleop_estop":
+            return self.teleoperation.emergency_stop(params.get("pairId"))
+        if method == "teleop_reset":
+            return self.teleoperation.reset_estop(params.get("pairId"), params.get("confirmed") is True)
+        if method == "teleop_disconnect":
+            return self.teleoperation.disconnect(params.get("pairId"))
         if method == "simulate":
             return self.mujoco.execute(params.get("command"), params.get("authorization"),
                                        params.get("attempt"), params.get("confirmation"), on_event)
@@ -200,20 +273,61 @@ class EdgeRuntime:
         if method == "ports":
             return {"items": self.physical.ports()}
         if method == "connect":
+            if self.calibration.status().get("active"):
+                raise RuntimeError("Disconnect or stop calibration before connecting a robot.")
             if params.get("mode") != "PHYSICAL ROBOT READ ONLY" or params.get("confirmed") is not True:
                 raise PermissionError("Read-only robot connection requires explicit user confirmation.")
             selected_port = params.get("port")
             if not isinstance(selected_port, str) or selected_port not in {row.get("path") for row in self.physical.ports()}:
                 raise ValueError("Select a currently discovered serial port; ports are never guessed.")
-            status = self.physical.connect(selected_port, params.get("deviceId"))
+            role = params.get("role", "follower")
+            if role not in {"leader", "follower"}:
+                raise ValueError("Select leader or follower explicitly.")
+            adapter = self.leader if role == "leader" else self.physical
+            other = self.physical if role == "leader" else self.leader
+            other_status = other.status()
+            if other_status.get("connected") and other_status.get("port") == selected_port:
+                raise ValueError("Leader and follower must use different serial ports.")
+            status = adapter.connect(selected_port, params.get("deviceId"))
             self.active = "PHYSICAL ROBOT READ ONLY"
             return status
         if method == "disconnect":
-            status = self.physical.disconnect()
-            self.active = "SIMULATION"
+            role = params.get("role")
+            if role is None:
+                follower_status = self.physical.disconnect()
+                leader_status = self.leader.disconnect()
+                self.active = "SIMULATION"
+                return {"follower": follower_status, "leader": leader_status, "motionEnabled": False}
+            if role not in {"leader", "follower"}:
+                raise ValueError("Select leader or follower explicitly.")
+            adapter = self.leader if role == "leader" else self.physical
+            status = adapter.disconnect()
+            if not self.physical.status().get("connected") and not self.leader.status().get("connected"):
+                self.active = "SIMULATION"
             return status
         if method == "joint_state":
-            return self.physical.joint_state() if self.active == "PHYSICAL ROBOT READ ONLY" else self.simulated.joint_state()
+            role = params.get("role", "follower")
+            if role not in {"leader", "follower"}:
+                raise ValueError("Select leader or follower explicitly.")
+            adapter = self.leader if role == "leader" else self.physical
+            return adapter.joint_state() if adapter.status().get("connected") else self.simulated.joint_state()
+        if method == "calibration_status":
+            return self.calibration.status()
+        if method == "calibration_profiles":
+            return self.calibration.profiles(params.get("role"))
+        if method == "calibration_start":
+            if self.physical.status().get("connected") or self.leader.status().get("connected"):
+                raise RuntimeError("Disconnect both robot roles before starting calibration.")
+            params_role = params.get("role")
+            params_port = params.get("port")
+            other = self.leader if params_role == "follower" else self.physical
+            if other.status().get("connected") and other.status().get("port") == params_port:
+                raise RuntimeError("The selected serial port is already owned by the other robot role.")
+            return self.calibration.start(params_role, params_port, params.get("profileId"), params.get("confirmed") is True)
+        if method == "calibration_complete_step":
+            return self.calibration.complete_step()
+        if method == "calibration_stop":
+            return self.calibration.stop()
         if method == "stop":
             self._stop.set()
             return {"stopping": True, "motionEnabled": False}
@@ -222,7 +336,12 @@ class EdgeRuntime:
     def close(self) -> None:
         self._stop.set()
         try:
+            for pair_id in ("pair-a", "pair-b"):
+                self.teleoperation.disconnect(pair_id)
+            self.calibration.stop()
+            self.policies.unload()
             self.physical.disconnect()
+            self.leader.disconnect()
         except Exception:
             logger.exception("robot disconnect failed during shutdown")
 
@@ -241,7 +360,9 @@ def serve(runtime: EdgeRuntime | None = None, reader=sys.stdin, writer=sys.stdou
     def run_simulation(message: dict[str, Any]) -> None:
         request_id = message.get("id")
         try:
-            result = runtime.handle(message, on_event=lambda frame: write({"id": request_id, "event": "simulation.frame", "data": frame}))
+            method = message.get("method")
+            event_name = "policy.progress" if method == "policy_import" else "simulation.frame"
+            result = runtime.handle(message, on_event=lambda frame: write({"id": request_id, "event": event_name, "data": frame}))
             write({"id": request_id, "ok": True, "result": result})
         except Exception as error:
             logger.warning("simulation request failed: %s", type(error).__name__)
@@ -257,7 +378,7 @@ def serve(runtime: EdgeRuntime | None = None, reader=sys.stdin, writer=sys.stdou
                 if not isinstance(message, dict):
                     raise ValueError("Request must be a JSON object.")
                 request_id = message.get("id")
-                if message.get("method") == "simulate":
+                if message.get("method") in {"simulate", "policy_import", "policy_run"}:
                     thread = threading.Thread(target=run_simulation, args=(message,), daemon=True)
                     simulation_threads.add(thread)
                     thread.start()

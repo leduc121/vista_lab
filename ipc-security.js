@@ -20,4 +20,14 @@ function validateTwinWsUrl(value) {
   return url.toString();
 }
 
-module.exports = { isTrustedMainFrame, validateTwinWsUrl };
+function validateEvidenceDownloadUrl(value) {
+  let url;
+  try { url = new URL(String(value || '')); } catch { throw new Error('Education API returned an invalid evidence download URL.'); }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) || url.username || url.password || url.hash) {
+    throw new Error('Education API returned an unsafe evidence download URL.');
+  }
+  return url.toString();
+}
+
+module.exports = { isTrustedMainFrame, validateTwinWsUrl, validateEvidenceDownloadUrl };

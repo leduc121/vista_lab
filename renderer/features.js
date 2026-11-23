@@ -1,7 +1,9 @@
 import * as Blockly from 'blockly';
 import 'blockly/blocks';
 import { mountTwinViewer, parseTwinFrame } from './twin-viewer.js';
+import { connectTwinSocket } from './twin-connection.js';
 import './features.css';
+
 
 const bridge = window.vista;
 const supported = {
@@ -128,7 +130,9 @@ async function openAssignmentPicker(kind) {
       labs.forEach((lab) => {
         const button = document.createElement('button');
         button.className = 'feature-assignment';
-        button.innerHTML = `<span class="assignment-code">${escapeHtml(lab.lessonCode)}</span><span class="assignment-title">${escapeHtml(lab.title)}</span><span class="assignment-course">${escapeHtml(lab.courseTitle)}</span><span class="assignment-open">Open →</span>`;
+        const state = lab.attempt_status || lab.learning_status || lab.status || 'assigned';
+        const due = lab.due_at ? new Date(lab.due_at).toLocaleDateString() : 'No due date';
+        button.innerHTML = `<span class="assignment-code">${escapeHtml(lab.lessonCode)}</span><span class="assignment-title">${escapeHtml(lab.title)}</span><span class="assignment-course">${escapeHtml(lab.courseTitle)}</span><span class="assignment-course">${escapeHtml(state)} · due ${escapeHtml(due)}</span><span class="assignment-open">Open →</span>`;
         button.onclick = async () => {
           if (kind === 'twin') await renderTwinPage(lab);
           else await window.vistaDesktop.openWorkspace(lab, lab.attemptId);
@@ -289,12 +293,13 @@ async function renderWorkspace(lab, requestedAttemptId) {
         <div class="feature-toolbar"><span class="save-state" data-save-state>Draft local</span><button class="ghost" data-undo aria-label="Undo">Undo</button><button class="ghost" data-redo aria-label="Redo">Redo</button><button class="ghost" data-reset-workspace>Reset</button><button class="ghost" data-validate>Validate</button><button class="ghost" data-save>Save program</button><button class="ghost" data-version disabled>Create version</button><button class="ghost" data-run-local disabled>Run local MuJoCo</button><button class="primary-action" data-run disabled>Run VISTA schematic</button><button class="ghost" data-submit disabled>Submit version</button></div>
         <div class="version-toolbar"><label for="saved-program-version">Saved versions</label><select id="saved-program-version" data-version-picker disabled><option value="">No saved versions</option></select><button class="ghost" data-restore-version disabled>Restore into workspace</button></div>
         <div class="feature-error" role="alert" data-error hidden></div>
-        <div class="feature-grid"><section class="feature-blockly" aria-label="VISTA Blockly programming workspace"><div data-blockly></div></section><aside class="feature-side"><section class="feature-panel"><div class="panel-heading"><h2>SO-101 Digital Twin</h2><div class="simulation-controls"><label>Speed <select data-simulation-speed aria-label="Simulation speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label><button class="ghost" data-simulation-pause disabled>Pause</button><button class="ghost" data-simulation-resume disabled>Resume</button><button class="ghost" data-simulation-stop disabled>Stop</button><button class="ghost" data-camera-reset>Reset view</button></div></div><div class="twin-viewport" data-twin-canvas></div><progress class="simulation-progress" max="100" value="0" data-simulation-progress aria-label="MuJoCo simulation progress"></progress><div class="joint-state" data-joints></div><div class="telemetry-note" data-simulation-status aria-live="polite">MuJoCo model · waiting for a run</div></section><section class="feature-panel"><h2>Validation & execution</h2><div data-validation class="validation-state">Validate the workspace before saving.</div><pre class="command-preview" data-command-preview aria-label="Allowlisted simulation command preview">Run Validate to inspect the allowed command sequence.</pre><div class="schematic-result" data-result>VISTA schematic result will appear here after a version is saved.</div></section></aside></div>
+        <div class="feature-grid"><section class="feature-blockly" aria-label="VISTA Blockly programming workspace"><div data-blockly></div></section><aside class="feature-side"><section class="feature-panel"><div class="panel-heading"><h2>SO-101 Digital Twin</h2><div class="simulation-controls"><label>Speed <select data-simulation-speed aria-label="Simulation speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label><button class="ghost" data-simulation-pause disabled>Pause</button><button class="ghost" data-simulation-resume disabled>Resume</button><button class="ghost" data-simulation-stop disabled>Stop</button><button class="ghost" data-camera-reset>Reset view</button></div></div><div class="twin-viewport" data-twin-canvas></div><progress class="simulation-progress" max="100" value="0" data-simulation-progress aria-label="MuJoCo simulation progress"></progress><div class="joint-state" data-joints></div><div class="telemetry-note" data-simulation-status aria-live="polite">Local SO-101 viewer loads when MuJoCo simulation starts.</div></section><section class="feature-panel"><h2>Validation & execution</h2><div data-validation class="validation-state">Validate the workspace before saving.</div><pre class="command-preview" data-command-preview aria-label="Allowlisted simulation command preview">Run Validate to inspect the allowed command sequence.</pre><div class="schematic-result" data-result>VISTA schematic result will appear here after a version is saved.</div></section></aside></div>
       </div>`;
     const host = sheet.querySelector('[data-blockly]');
     const allowed = assignment.allowed_blocks || [];
     const ws = Blockly.inject(host, {
       toolbox: editable ? toolbox(allowed) : null, readOnly: !editable, theme: theme(), renderer: 'zelos', trashcan: editable, sounds: false,
+      media: new URL('../renderer/vendor/blockly/media/', document.baseURI).toString(),
       move: { scrollbars: true, drag: true, wheel: true }, zoom: { controls: true, wheel: false, pinch: true, startScale: 0.82, maxScale: 1.6, minScale: 0.4 },
       grid: { spacing: 24, length: 2, colour: '#E3E1DA', snap: true }
     });
@@ -316,7 +321,9 @@ async function renderWorkspace(lab, requestedAttemptId) {
     }
     let twinController = null;
     let twinReady;
-    activeWorkspace = { dispose: () => { twinController?.dispose(); ws.dispose(); } };
+    let twinMountCancelled = false;
+    let cancelTwinMount = () => {};
+    activeWorkspace = { dispose: () => { twinMountCancelled = true; cancelTwinMount(); twinController?.dispose(); ws.dispose(); } };
     const validationEl = sheet.querySelector('[data-validation]');
     const saveState = sheet.querySelector('[data-save-state]');
     const error = sheet.querySelector('[data-error]');
@@ -404,6 +411,9 @@ async function renderWorkspace(lab, requestedAttemptId) {
         programRecord = programRecord
           ? await call('updateProgram', programRecord.id, { workspaceJson: payload.workspaceJson, robotProgram: payload.robotProgram })
           : await call('createProgram', attempt.id, payload);
+        const serverProgram = await call('getProgram', attempt.id);
+        if (!serverProgram?.id || serverProgram.id !== programRecord.id) throw new Error('Saved Blockly program could not be reloaded from the Education API.');
+        programRecord = serverProgram;
         saveState.textContent = 'API saved · storing local draft…';
         saveState.textContent = demoMode ? 'Saved in Demo fixture' : 'Saved to VISTA';
         await bridge.saveDraft(attempt.id, { workspaceJson: payload.workspaceJson, updatedAt: new Date().toISOString(), dirty: false });
@@ -456,7 +466,7 @@ async function renderWorkspace(lab, requestedAttemptId) {
         if (twinController) twinController.setFrame(frame);
       });
       try {
-        await twinReady;
+        await ensureWorkspaceTwin();
         const run = await bridge.runSimulation(attempt.id, {
           id: crypto.randomUUID(), expiresAt: Date.now() + 4 * 60_000,
           speed: Number(sheet.querySelector('[data-simulation-speed]').value), steps: result.program.steps
@@ -497,11 +507,41 @@ async function renderWorkspace(lab, requestedAttemptId) {
         }
         if (!TERMINAL.includes(String(status.status || '').toLowerCase())) throw new Error('VISTA schematic is still running after 45 seconds. Check the run history before retrying.');
         const [result, events] = await Promise.all([
-          call('experimentResult', experiment.id).catch(() => null),
-          call('experimentEvents', experiment.id).catch(() => null)
+          call('experimentResult', experiment.id).catch((error) => { if (error.status === 404) return null; throw error; }),
+          call('experimentEvents', experiment.id).catch((error) => { if (error.status === 404) return null; throw error; })
         ]);
-        const eventCount = Array.isArray(events?.items) ? events.items.length : 0;
-        resultEl.textContent = `VISTA schematic status: ${status.status} · mode: ${status.execution_mode || status.executionMode || 'schematic'}${result ? ' · server result available.' : ''}${eventCount ? ` · ${eventCount} server events.` : ''} This is not MuJoCo or physical telemetry.`;
+        // The Education API returns the owned event rows as an array. Keep
+        // compatibility with older paginated envelopes while counting both.
+        const eventCount = Array.isArray(events) ? events.length : (Array.isArray(events?.items) ? events.items.length : 0);
+        const resultRow = Array.isArray(result) ? result[0] : result;
+        const resultDetails = resultRow
+          ? ` · result ${JSON.stringify({ output: resultRow.output_snapshot, metrics: resultRow.metrics }).slice(0, 900)}` : '';
+        const summary = `VISTA schematic status: ${status.status} · mode: ${status.execution_mode || status.executionMode || 'schematic'}${resultDetails}${eventCount ? ` · ${eventCount} server events.` : ''} This is not MuJoCo or physical telemetry.`;
+        resultEl.replaceChildren(document.createTextNode(summary));
+        try {
+          const artifacts = await call('experimentArtifacts', experiment.id);
+          const availableArtifacts = (Array.isArray(artifacts) ? artifacts : []).filter((artifact) => artifact?.availability === 'available' && typeof artifact.id === 'string');
+          if (availableArtifacts.length) {
+            resultEl.append(document.createTextNode(' Server evidence: '));
+            for (const artifact of availableArtifacts) {
+              const download = document.createElement('button');
+              download.type = 'button'; download.className = 'ghost'; download.dataset.experimentEvidence = artifact.id;
+              download.textContent = `Download ${artifact.type || 'evidence'}`;
+              download.setAttribute('aria-label', `Download server evidence ${artifact.id}`);
+              download.onclick = async () => {
+                download.disabled = true;
+                try { await bridge.openExperimentEvidence(experiment.id, artifact.id); }
+                catch (downloadError) { error.hidden = false; error.textContent = `Evidence download: ${apiErrorMessage(downloadError)}`; }
+                finally { download.disabled = false; }
+              };
+              resultEl.append(download, document.createTextNode(' '));
+            }
+          }
+        } catch (evidenceError) {
+          // The experiment result remains authoritative even when optional
+          // object storage is unavailable; make that limitation visible.
+          resultEl.append(document.createTextNode(` Evidence listing unavailable: ${apiErrorMessage(evidenceError)}`));
+        }
       } catch (e) { error.hidden = false; error.textContent = `Schematic API: ${apiErrorMessage(e)}`; resultEl.textContent = 'No terminal server result was confirmed. Check the experiment status before starting another run.'; }
       runButton.disabled = !versionRecord;
     };
@@ -509,28 +549,56 @@ async function renderWorkspace(lab, requestedAttemptId) {
       if (!versionRecord) return;
       try {
         const submitted = await call('submitAttempt', attempt.id, { programVersionId: versionRecord.id });
-        sheet.querySelector('[data-result]').textContent = `Submission saved by VISTA: ${submitted.status || 'submitted'}.`;
+        const resultEl = sheet.querySelector('[data-result]');
+        resultEl.textContent = 'Submission accepted. Refreshing the saved attempt and LMS status…';
         for (const selector of ['[data-validate]', '[data-save]', '[data-version]', '[data-run]', '[data-run-local]', '[data-submit]', '[data-restore-version]']) {
           const button = sheet.querySelector(selector); if (button) button.disabled = true;
         }
         ws.setIsReadOnly(true);
+        try {
+          const [freshAttempt, freshLearning] = await Promise.all([
+            call('getAttempt', attempt.id),
+            call('listLabs')
+          ]);
+          const matchingRow = (Array.isArray(freshLearning) ? freshLearning : (freshLearning?.labs || []))
+            .find((row) => (row.classroom_assignment_id || row.id) === classroomAssignmentId);
+          const status = freshAttempt.status || matchingRow?.attempt_status || matchingRow?.status || submitted.status || 'submitted';
+          const score = freshAttempt.score ?? matchingRow?.score;
+          const feedback = freshAttempt.teacher_feedback || matchingRow?.teacher_feedback;
+          resultEl.textContent = `Server attempt refreshed: ${status}${score !== undefined && score !== null ? ` · score ${score}` : ''}${feedback ? ` · ${feedback}` : ''}.`;
+          window.dispatchEvent(new CustomEvent('vista:learning-data-changed'));
+        } catch (refreshError) {
+          resultEl.textContent = `Submission accepted (${submitted.status || 'submitted'}), but the server refresh failed: ${apiErrorMessage(refreshError)}`;
+        }
       } catch (e) { error.hidden = false; error.textContent = apiErrorMessage(e); }
     };
-    twinReady = createTwin(sheet.querySelector('[data-twin-canvas]'), sheet.querySelector('[data-joints]'), simulationStatus)
-      .then((controller) => { twinController = controller; return controller; })
-      .catch((modelError) => { simulationStatus.textContent = `SO-101 model unavailable: ${modelError.message}`; throw modelError; });
-    twinReady.catch(() => {});
+    const ensureWorkspaceTwin = () => {
+      if (!twinReady) {
+        twinReady = createTwin(sheet.querySelector('[data-twin-canvas]'), sheet.querySelector('[data-joints]'), simulationStatus, (cancel) => {
+          cancelTwinMount = cancel;
+          if (twinMountCancelled) cancel();
+        })
+          .then((controller) => { twinController = controller; return controller; })
+          .catch((modelError) => { simulationStatus.textContent = `SO-101 model unavailable: ${modelError.message}`; throw modelError; });
+        twinReady.catch(() => {});
+      }
+      return twinReady;
+    };
     Blockly.svgResize(ws);
+    sheet.querySelector('.feature-workspace-page').dataset.workspaceReady = 'true';
   } catch (error) {
     sheet.innerHTML = `<div class="detail-panel feature-error" role="alert"><h2>Workspace unavailable</h2><p>${escapeHtml(error.message)}</p><button class="ghost" data-back>Back to assignments</button></div>`;
     sheet.querySelector('[data-back]').onclick = () => openAssignmentPicker('workspace');
   }
 }
 
-async function createTwin(host, joints, status) {
-  const viewer = await mountTwinViewer(host);
-  const names = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper'];
+async function createTwin(host, joints, status, registerCancel = () => {}) {
   let disposed = false;
+  let cancelViewer = () => {};
+  const viewerReady = mountTwinViewer(host, (cancel) => { cancelViewer = cancel; registerCancel(() => { disposed = true; cancel(); }); });
+  const viewer = await viewerReady;
+  if (disposed) { viewer.dispose(); return { setFrame() {}, resetCamera() {}, dispose() {} }; }
+  const names = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper'];
   const setFrame = (raw) => {
     const frame = parseTwinFrame(raw, 'local-so101-simulation');
     if (!frame || disposed) return false;
@@ -543,11 +611,12 @@ async function createTwin(host, joints, status) {
     status.textContent = `MuJoCo · local simulation · ${frame.step || 'Ready'}`;
     return true;
   };
-  const stopListening = bridge.onSimulationFrame(setFrame);
+  let stopListening = () => {};
+  stopListening = bridge.onSimulationFrame(setFrame);
   return {
     setFrame,
     resetCamera: () => viewer.resetCamera(),
-    dispose() { if (disposed) return; disposed = true; stopListening(); viewer.dispose(); joints.replaceChildren(); }
+    dispose() { if (disposed) { stopListening(); return; } disposed = true; stopListening(); viewer.dispose(); joints.replaceChildren(); }
   };
 }
 
@@ -577,13 +646,19 @@ async function renderTwinPage(lab = null) {
     catch (e) { endpointState.textContent = e.message; }
   };
   let viewer, socket = null, staleTimer = null, reconnectTimer = null, disposed = false;
+  let cancelViewer = () => {};
   const disconnect = (message = 'Disconnected') => {
     clearTimeout(staleTimer); clearTimeout(reconnectTimer); staleTimer = reconnectTimer = null;
     if (socket) { const current = socket; socket = null; current.onopen = current.onmessage = current.onerror = current.onclose = null; try { current.close(1000, 'viewer closed'); } catch {} }
     viewer?.setFrame(null); joints.replaceChildren(); status.textContent = message; note.textContent = 'Telemetry disconnected';
   };
-  const dispose = () => { disposed = true; disconnect('Disconnected'); viewer?.dispose(); if (activeTwin?.dispose === dispose) activeTwin = null; };
-  try { viewer = await mountTwinViewer(host); activeTwin = { dispose }; note.textContent = 'VISTA SO-101 URDF/STL loaded · telemetry disconnected'; }
+  const dispose = () => { disposed = true; disconnect('Disconnected'); cancelViewer(); viewer?.dispose(); if (activeTwin?.dispose === dispose) activeTwin = null; };
+  activeTwin = { dispose };
+  try {
+    viewer = await mountTwinViewer(host, (cancel) => { cancelViewer = cancel; if (disposed) cancel(); });
+    if (disposed) { viewer.dispose(); return; }
+    note.textContent = 'VISTA SO-101 URDF/STL loaded · telemetry disconnected';
+  }
   catch (e) { error.hidden = false; error.textContent = `SO-101 model could not load: ${e.message}`; connectButton.disabled = true; return; }
   container.querySelector('[data-reset-camera]').onclick = () => viewer.resetCamera();
   try {
@@ -612,26 +687,30 @@ async function renderTwinPage(lab = null) {
       if (!attempt?.id || attempt.status && attempt.status !== 'in_progress') throw new Error('Only an active in-progress lab attempt can open the live viewer.');
       const scope = await call('issueTwinViewerScope', attempt.id, { robotId: robotSelect.value });
       if (scope.attemptId !== attempt.id || scope.robotId !== robotSelect.value || !scope.token) throw new Error('VISTA returned a scope that does not match the selected attempt and robot.');
-      const protocols = [`vista.twin.${scope.token}`];
-      socket = new WebSocket(config.twinWsUrl, protocols);
+      const connection = connectTwinSocket(config.twinWsUrl, scope.token, {
+        WebSocketImpl: window.WebSocket,
+        timeoutMs: 10000,
+        onOpen: () => { if (!disposed) status.textContent = 'Connected · awaiting telemetry'; },
+        onMessage: (event) => {
+          try {
+            const raw = JSON.parse(event.data);
+            if (raw?.type === 'heartbeat') { status.textContent = 'Connected · heartbeat'; clearTimeout(staleTimer); staleTimer = setTimeout(() => { if (!disposed) status.textContent = 'Stale telemetry · heartbeat missed'; }, 15000); return; }
+            const frame = parseTwinFrame(raw, scope.robotId);
+            if (!frame) return;
+            if (frame.attempt_id && frame.attempt_id !== scope.attemptId) { disconnect('Rejected mismatched attempt telemetry'); error.hidden = false; error.textContent = 'Twin frame attempt did not match the authorized lab attempt.'; return; }
+            renderFrame(frame);
+          } catch { /* malformed server frame is ignored; it never updates the viewer */ }
+        },
+        onError: () => { if (!disposed) status.textContent = 'Connection error'; },
+        onClose: (event) => {
+          if (disposed) return;
+          clearTimeout(staleTimer); viewer.setFrame(null); joints.replaceChildren(); status.textContent = event.code === 4403 ? 'Authorization expired or denied' : 'Disconnected'; note.textContent = 'Telemetry disconnected';
+          if (event.code === 4403) { error.hidden = false; error.textContent = 'VISTA closed this viewer scope. Reconnect to request a fresh attempt-bound authorization.'; }
+        }
+      });
+      socket = connection.socket;
       status.textContent = 'Connecting…';
-      socket.onopen = () => { if (!disposed) status.textContent = 'Connected · awaiting telemetry'; };
-      socket.onmessage = (event) => {
-        try {
-          const raw = JSON.parse(event.data);
-          if (raw?.type === 'heartbeat') { status.textContent = 'Connected · heartbeat'; clearTimeout(staleTimer); staleTimer = setTimeout(() => { if (!disposed) status.textContent = 'Stale telemetry · heartbeat missed'; }, 15000); return; }
-          const frame = parseTwinFrame(raw, scope.robotId);
-          if (!frame) return;
-          if (frame.attempt_id && frame.attempt_id !== scope.attemptId) { disconnect('Rejected mismatched attempt telemetry'); error.hidden = false; error.textContent = 'Twin frame attempt did not match the authorized lab attempt.'; return; }
-          renderFrame(frame);
-        } catch { /* malformed server frame is ignored; it never updates the viewer */ }
-      };
-      socket.onerror = () => { if (!disposed) status.textContent = 'Connection error'; };
-      socket.onclose = (event) => {
-        if (disposed) return;
-        clearTimeout(staleTimer); viewer.setFrame(null); joints.replaceChildren(); status.textContent = event.code === 4403 ? 'Authorization expired or denied' : 'Disconnected'; note.textContent = 'Telemetry disconnected';
-        if (event.code === 4403) { error.hidden = false; error.textContent = 'VISTA closed this viewer scope. Reconnect to request a fresh attempt-bound authorization.'; }
-      };
+      await connection.opened;
     } catch (e) { disconnect('Disconnected'); error.hidden = false; error.textContent = apiErrorMessage(e); }
     finally { connectButton.disabled = robotSelect.disabled; }
   };
@@ -646,6 +725,15 @@ window.vistaDesktop = {
 };
 
 window.addEventListener('vista:navigate', (event) => {
+  // Both views own WebGL render loops. The shell replaces the work-sheet on
+  // navigation, so dispose their renderers before the canvas is detached.
+  // In particular, leaving Blockly for the Twin must not keep its hidden
+  // Three.js renderer drawing while the Twin creates a second WebGL context.
+  activeWorkspace?.dispose();
+  activeWorkspace = null;
+  activeTwin?.dispose?.();
+  activeTwin = null;
+
   if (event.detail?.view === 'workspace') openAssignmentPicker('workspace');
   if (event.detail?.view === 'twin') openAssignmentPicker('twin');
 });

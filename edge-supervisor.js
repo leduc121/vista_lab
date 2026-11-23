@@ -43,6 +43,8 @@ class EdgeSupervisor {
       const child = this.spawnImpl(command.executable, command.args, {
         shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, VISTA_SO101_MJCF: this.modelPath || bundledModel,
+          VISTA_POLICY_MODEL_DIR: path.join(this.app?.getPath?.('userData') || process.env.XDG_DATA_HOME || process.env.HOME || __dirname, 'models'),
+          ...(this.platform === 'linux' ? { MUJOCO_GL: process.env.MUJOCO_GL || 'egl' } : {}),
           ...(!this.app?.isPackaged ? { PYTHONPATH: [__dirname, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) } : {}) }
       });
       this.child = child;

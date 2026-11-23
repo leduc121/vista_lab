@@ -1651,3 +1651,78 @@ button.btn-row-action:disabled {
 .settings-endpoint button {
   justify-self: start;
 }
+.robot-station { max-width: 1240px; }
+.robot-station > .robot-section-title { margin-top: 20px; }
+.robot-section-title,.robot-role-head { display:flex; align-items:center; justify-content:space-between; gap:18px; }
+.robot-section-title h2,.robot-role-head h2 { margin:0; font-size:17px; font-weight:550; }
+.robot-section-title p { margin:5px 0 0; max-width:760px; color:var(--muted); font-size:13px; line-height:1.5; }
+.robot-role-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; margin:16px 0 26px; }
+.robot-role-panel,.robot-calibration-panel,.robot-teleop-panel { min-width:0; padding:18px; border:1px solid var(--border); border-radius:var(--radius-card); background:#13191a; }
+.robot-role-panel { display:flex; flex-direction:column; gap:13px; }
+.robot-role-head { margin-bottom:2px; }
+.robot-state { flex:none; padding:5px 9px; border:1px solid #514b3c; border-radius:999px; color:#d8c58d; background:#24221b; font-size:11px; }
+.robot-state.connected { color:#9adab0; border-color:#345943; background:#17271e; }
+.robot-field { display:grid; gap:6px; color:var(--text); font-size:12px; }
+.robot-field select,.robot-field input { box-sizing:border-box; width:100%; min-width:0; height:40px; padding:0 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); font:inherit; }
+.robot-field input { font-family:'IBM Plex Mono',monospace; }
+.robot-actions { display:flex; flex-wrap:wrap; align-items:center; gap:9px; }
+.robot-actions button { min-height:40px; }
+.robot-station button.primary:disabled { opacity:1; color:#c2d0cc; background:#283432; border-color:#485651; }
+.robot-meta { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
+.robot-error { margin:0; color:#ffb4a9; font-size:13px; line-height:1.5; }
+.robot-warning { margin:0; color:#e7cd89; font-size:12px; line-height:1.5; }
+.robot-joints { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 20px; padding:8px 0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule); }
+.robot-joint-row,.robot-range-row { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:34px; border-bottom:1px solid var(--rule); color:var(--muted); font-size:12px; }
+.robot-joint-row:nth-last-child(-n+2) { border-bottom:0; }
+.robot-joint-row strong { color:var(--text); font-variant-numeric:tabular-nums; font-weight:500; }
+.robot-calibration-panel,.robot-teleop-panel { margin:20px 0; }
+.robot-calibration-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin:18px 0; }
+.robot-calibration-steps { display:grid; grid-template-columns:1fr 1fr; gap:0 24px; margin:18px 0; padding-left:22px; }
+.robot-calibration-steps li { padding:12px 8px 14px 4px; border-top:1px solid var(--rule); }
+.robot-calibration-steps strong { font-size:13px; font-weight:550; }
+.robot-calibration-steps p { margin:7px 0; color:var(--muted); font-size:12px; line-height:1.5; }
+.robot-calibration-steps span { color:#d7c17f; font-size:11px; }
+.robot-consent { display:flex; align-items:flex-start; gap:10px; margin:14px 0; color:var(--text); font-size:13px; line-height:1.5; }
+.robot-consent input { flex:none; width:18px; height:18px; margin:0; accent-color:var(--accent); }
+.robot-range-table { margin:16px 0; }
+.robot-range-row { display:grid; grid-template-columns:1.3fr repeat(3,1fr); font-variant-numeric:tabular-nums; }
+.robot-range-row strong { color:var(--text); font-weight:500; }
+.robot-empty { margin:14px 0; padding:16px; border:1px dashed var(--border); color:var(--muted); font-size:13px; }
+.robot-twin-link { min-height:42px; margin:0 0 30px; padding:0; border:0; background:transparent; color:#a8ddd2; text-align:left; cursor:pointer; font:inherit; }
+.teleop-warning { margin:14px 0; padding:12px 14px; border:1px solid #765d2d; border-radius:8px; background:#292416; color:#f1d692; }
+.teleop-warning strong { font:600 11px/1.4 var(--font-mono, monospace); letter-spacing:.04em; }
+.teleop-warning p { margin:6px 0 0; color:#d4c9a9; font-size:12px; line-height:1.5; }
+.teleop-controls { display:grid; grid-template-columns:minmax(240px, 340px) 1fr; gap:14px; align-items:end; }
+.teleop-controls .robot-field select { box-sizing:border-box; width:100%; min-height:40px; padding:0 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); font:inherit; }
+.teleop-actions { margin:14px 0; }
+.deadman-button,.danger-action { min-height:44px; padding:0 16px; border:1px solid #866a32; border-radius:7px; background:#4a391b; color:#ffe0a0; font:600 12px var(--font-mono, monospace); touch-action:none; user-select:none; }
+.deadman-button:active { background:#73531f; transform:translateY(1px); }
+.danger-action { border-color:#80433e; background:#402321; color:#ffb4a9; }
+.robot-station button.deadman-button:disabled,.robot-station button.danger-action:disabled { opacity:.5; cursor:not-allowed; }
+.robot-state[data-state="ACTIVE"] { color:#a1ebbb; border-color:#2d6548; background:#153426; }
+.robot-state[data-state="STOPPED"],.robot-state[data-state="FAULT"] { color:#ffb4a9; border-color:#80433e; background:#402321; }
+.robot-state[data-state="DISCONNECTED"] { color:#aab4b0; border-color:#46504d; background:#202726; }
+.fake-leader-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px 18px; margin:16px 0 20px; padding:14px; border:1px solid var(--border); border-radius:8px; }
+.fake-joint-control { display:grid; grid-template-columns:1fr auto; align-items:center; gap:6px 10px; min-width:0; color:var(--muted); font-size:12px; }
+.fake-joint-control input { grid-column:1/-1; width:100%; accent-color:#80b7a4; }
+.fake-joint-control output { color:var(--text); font:11px var(--font-mono,monospace); font-variant-numeric:tabular-nums; }
+.teleop-twin-panel { margin:12px 0 22px; padding:14px; border:1px solid var(--border); border-radius:8px; background:#101617; }
+.teleop-twin-panel h3 { margin:0; font-size:14px; font-weight:550; }
+.teleop-twin-viewport { width:100%; height:360px; margin-top:12px; overflow:hidden; border-radius:6px; background:#111718; }
+.teleop-twin-viewport canvas { width:100%; height:100%; display:block; touch-action:none; }
+.teleop-twin-panel .robot-meta { margin-top:10px; overflow-wrap:anywhere; }
+.teleop-twin-viewport:focus-visible { outline:2px solid #367564; outline-offset:2px; }
+@media (max-width: 900px) {
+  .robot-role-grid { grid-template-columns:1fr; }
+  .robot-calibration-grid { grid-template-columns:1fr 1fr; }
+  .fake-leader-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 620px) {
+  .robot-section-title,.robot-role-head { align-items:flex-start; flex-direction:column; }
+  .robot-calibration-grid,.robot-calibration-steps { grid-template-columns:1fr; }
+  .teleop-controls,.fake-leader-grid { grid-template-columns:1fr; }
+  .teleop-twin-viewport { height:280px; }
+  .robot-role-panel,.robot-calibration-panel,.robot-teleop-panel { padding:14px; }
+  .robot-joints { gap:0 12px; }
+  .robot-range-row { grid-template-columns:1fr repeat(3,auto); gap:8px; font-size:11px; }
+}

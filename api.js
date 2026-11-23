@@ -128,6 +128,8 @@ function realClient(cfg) {
       return { ...profile, name: profile.fullName || profile.full_name || 'Student', studentCode: profile.studentCode || profile.id };
     },
     listLabs: () => get('/me/learning'),
+    enrollments: () => get('/me/enrollments'),
+    learningPath: () => get('/me/learning-path'),
     history: () => get('/me/experiments'),
     assignment: (id) => get(`/classroom-assignments/${uuid(id)}`),
     startAttempt: (classroomAssignmentId) => post(`/classroom-assignments/${uuid(classroomAssignmentId)}/attempts`),
@@ -151,6 +153,10 @@ function realClient(cfg) {
     experimentStatus: (experimentId) => get(`/me/experiments/${uuid(experimentId)}`),
     experimentEvents: (experimentId) => get(`/me/experiments/${uuid(experimentId)}/events`),
     experimentResult: (experimentId) => get(`/me/experiments/${uuid(experimentId)}/result`),
+    // Evidence is produced and uploaded by the authorized Education API runtime;
+    // Desktop can only list/download evidence through learner-owned routes.
+    experimentArtifacts: (experimentId) => get(`/me/experiments/${uuid(experimentId)}/artifacts`),
+    experimentArtifactDownload: (experimentId, artifactId) => get(`/me/experiments/${uuid(experimentId)}/artifacts/${uuid(artifactId)}/download`),
     programVersions: (programId) => get(`/me/programs/${uuid(programId)}/versions`),
     digitalTwinAvailability: () => get('/robots/digital-twin/availability'),
     issueTwinViewerScope: (attemptId, { robotId, labSessionId } = {}) => post(`/me/attempts/${uuid(attemptId)}/digital-twin/viewer-scope`, { robotId, ...(labSessionId ? { labSessionId } : {}) }),
@@ -189,8 +195,8 @@ function uuid(value) {
 
 function mockClient() {
   const assignments = [
-    { id: '00000000-0000-4000-8000-000000000001', classroom_assignment_id: '00000000-0000-4000-8000-000000000001', title: 'Gắp và đặt vật thể', instructions: 'Dùng Blockly tạo một chu trình gắp thả.', course_title: 'Robotics Fundamentals', classroom_name: '8A2 · Demo', due_at: null, attempt_id: null, status: 'assigned', learning_status: 'assigned', allowed_blocks: ['robot_start','robot_select_arm','robot_move_home','robot_gripper_open','robot_gripper_close','robot_wait'] },
-    { id: '00000000-0000-4000-8000-000000000002', classroom_assignment_id: '00000000-0000-4000-8000-000000000002', title: 'Tọa độ học tập', instructions: 'Mô phỏng một điểm đến trong khung tọa độ học tập.', course_title: 'Robot Programming', classroom_name: '8A2 · Demo', due_at: null, attempt_id: null, status: 'assigned', learning_status: 'assigned', allowed_blocks: ['robot_start','robot_select_arm','robot_move_to'] }
+    { id: '00000000-0000-4000-8000-000000000001', classroom_assignment_id: '00000000-0000-4000-8000-000000000001', title: 'Gắp và đặt vật thể', instructions: 'Dùng Blockly tạo một chu trình gắp thả.', course_title: 'Robotics Fundamentals', classroom_name: '8A2 · Demo', due_at: null, attempt_id: null, status: 'assigned', learning_status: 'assigned', constraints: { kind: 'symbolic_program' }, allowed_blocks: ['arm.select','gripper.open','gripper.close','wait'] },
+    { id: '00000000-0000-4000-8000-000000000002', classroom_assignment_id: '00000000-0000-4000-8000-000000000002', title: 'Tọa độ học tập', instructions: 'Mô phỏng một điểm đến trong khung tọa độ học tập.', course_title: 'Robot Programming', classroom_name: '8A2 · Demo', due_at: null, attempt_id: null, status: 'assigned', learning_status: 'assigned', constraints: { kind: 'symbolic_program' }, allowed_blocks: ['arm.select','home','preview.move_xyz','wait'] }
   ];
   const attempts = new Map();
   const programs = new Map();
@@ -209,6 +215,8 @@ function mockClient() {
     async setSession() {}, getSession() { return null; }, async logout() {},
     async me() { return user; },
     async listLabs() { return assignments; },
+    async enrollments() { return []; },
+    async learningPath() { return { courses: [] }; },
     async history() { return []; },
     async assignment(id) { return assignments.find((a) => a.id === id) || assignments[0]; },
     async startAttempt(id) {
@@ -241,6 +249,8 @@ function mockClient() {
     async experimentStatus(experimentId) { return { id: experimentId, status: 'succeeded', execution_mode: 'schematic' }; },
     async experimentEvents() { return { items: [] }; },
     async experimentResult() { return { mode: 'schematic', telemetry: [], authoritative: false }; },
+    async experimentArtifacts() { return []; },
+    async experimentArtifactDownload() { throw new Error('Evidence downloads require the real Education API.'); },
     async submitAttempt() { throw new Error('Submit cần backend thật và tài khoản Demo không thể ghi dữ liệu.'); },
     async physicalEligibility() { return { eligible: false, reason: 'SIMULATION_ONLY', readiness: { allocated: false, entitled: false, symbolicPassed: false, runtimeOnline: false, runtimeStopped: true, checkikReachable: false, robotReady: false, estopActive: false, motionEnabled: false, activeSession: false } }; },
     async activePhysicalExecution() { return null; },

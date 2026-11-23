@@ -1,7 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createClient } = require('../api');
-const { isTrustedMainFrame, validateTwinWsUrl } = require('../ipc-security');
+const { isTrustedMainFrame, validateTwinWsUrl, validateEvidenceDownloadUrl } = require('../ipc-security');
+
+test('Demo assignment fixtures declare the Blockly programming contract', async () => {
+  const client = createClient({ mock: true });
+  const labs = await client.listLabs();
+  assert.ok(labs.length > 0);
+  for (const lab of labs) {
+    assert.equal(lab.constraints?.kind, 'symbolic_program', `assignment ${lab.id} must open in the Blockly workspace`);
+    assert.ok(Array.isArray(lab.allowed_blocks) && lab.allowed_blocks.length > 0, `assignment ${lab.id} must define its allowed blocks`);
+    assert.ok(lab.allowed_blocks.every((block) => ['arm.select', 'home', 'preview.move_xyz', 'gripper.open', 'gripper.close', 'wait'].includes(block)), `assignment ${lab.id} must use canonical Blockly action identifiers`);
+  }
+});
 
 test('refreshes an expired access token through public Supabase auth and retries the API request', async (t) => {
   const requests = [];
@@ -109,6 +120,29 @@ test('Blockly versions and attempt-bound viewer scope use verified student route
   assert.equal(requests[1].options.headers.Authorization, 'Bearer student-token');
 });
 
+test('experiment evidence listing and download use only the authenticated student routes', async (t) => {
+  const requests = [];
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url, options) => {
+    requests.push({ url: String(url), options });
+    return new Response(JSON.stringify(requests.length === 1
+      ? [{ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', type: 'other', availability: 'available' }]
+      : { status: 'available', url: 'https://objects.example.test/signed-evidence' }), { status: 200 });
+  };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1' });
+  client.setSession({ access_token: 'student-token', refresh_token: 'refresh-token' });
+  const experimentId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const artifactId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  assert.equal((await client.experimentArtifacts(experimentId))[0].availability, 'available');
+  assert.deepEqual(await client.experimentArtifactDownload(experimentId, artifactId), { status: 'available', url: 'https://objects.example.test/signed-evidence' });
+  assert.equal(requests[0].url, `https://api.example.test/api/v1/me/experiments/${experimentId}/artifacts`);
+  assert.equal(requests[1].url, `https://api.example.test/api/v1/me/experiments/${experimentId}/artifacts/${artifactId}/download`);
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer student-token');
+  assert.equal(requests[1].options.headers.Authorization, 'Bearer student-token');
+  assert.throws(() => client.experimentArtifactDownload('not-an-id', artifactId), /không hợp lệ/i);
+});
+
 test('program update unwraps the Education API RETURNING row for version creation', async (t) => {
   const originalFetch = global.fetch;
   t.after(() => { global.fetch = originalFetch; });
@@ -168,6 +202,14 @@ test('Twin endpoint allows secure remote and loopback development URLs only', ()
   ]) assert.throws(() => validateTwinWsUrl(url));
 });
 
+test('signed evidence downloads allow HTTPS or loopback HTTP and reject unsafe URL schemes', () => {
+  assert.equal(validateEvidenceDownloadUrl('https://objects.example.test/evidence?signature=short-lived'), 'https://objects.example.test/evidence?signature=short-lived');
+  assert.equal(validateEvidenceDownloadUrl('http://127.0.0.1:9000/evidence?signature=local'), 'http://127.0.0.1:9000/evidence?signature=local');
+  for (const url of ['http://objects.example.test/evidence', 'file:///etc/passwd', 'https://user:pass@objects.example.test/evidence', 'https://objects.example.test/evidence#fragment']) {
+    assert.throws(() => validateEvidenceDownloadUrl(url), /unsafe evidence download URL/i);
+  }
+});
+
 test('API failures preserve forbidden status for feature-level denial handling', async (t) => {
   const originalFetch = global.fetch;
   t.after(() => { global.fetch = originalFetch; });
@@ -200,6 +242,25 @@ test('student login follows the Education API contract and uses bearer auth for 
   assert.equal(requests[2].url, 'https://api.skynex.best/api/v1/me/learning');
   assert.equal(requests[2].options.headers.Authorization, 'Bearer access-test');
   assert.equal(client.getSession().refresh_token, 'refresh-test');
+});
+
+test('student course progress uses the authenticated learning-path and enrollment contracts', async (t) => {
+  const requests = [];
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url, options) => {
+    requests.push({ url: String(url), options });
+    return new Response(JSON.stringify(String(url).endsWith('/me/enrollments') ? [] : { courses: [] }), { status: 200 });
+  };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1' });
+  client.setSession({ access_token: 'student-access', refresh_token: 'student-refresh' });
+  await client.enrollments();
+  await client.learningPath();
+  assert.deepEqual(requests.map((request) => request.url), [
+    'https://api.example.test/api/v1/me/enrollments',
+    'https://api.example.test/api/v1/me/learning-path'
+  ]);
+  assert.ok(requests.every((request) => request.options.headers.Authorization === 'Bearer student-access'));
 });
 
 test('unknown temporary-password challenge responses fail closed and are not persisted', async (t) => {
@@ -279,4 +340,35 @@ test('Twin parser requires six measured SO-101 joints and rejects wrong robot fr
   assert.equal(parseTwinFrame({ ...frame, measured: undefined }, 'robot-a'), null);
   assert.equal(parseTwinFrame({ ...frame, measured: measured.slice(1) }, 'robot-a'), null);
   assert.equal(parseTwinFrame(frame, 'robot-b'), null);
+});
+
+test('Twin WebSocket client uses the viewer subprotocol, wires frames before open, and bounds a stalled handshake', async () => {
+  const esbuild = require('esbuild');
+  const Module = require('node:module');
+  const path = require('node:path');
+  const entry = path.resolve(__dirname, '../renderer/twin-connection.js');
+  const output = esbuild.buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false, logLevel: 'silent' }).outputFiles[0].text;
+  const loaded = new Module(entry, module); loaded.filename = entry; loaded.paths = Module._nodeModulePaths(__dirname); loaded._compile(output, entry);
+  const { connectTwinSocket } = loaded.exports;
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    constructor(url, protocols) { this.url = url; this.protocols = protocols; this.readyState = FakeWebSocket.CONNECTING; FakeWebSocket.last = this; }
+    open() { this.readyState = 1; this.onopen?.({ type: 'open' }); }
+    send(data) { this.onmessage?.({ data }); }
+    close(code = 1000, reason = '') { this.readyState = 3; this.closeArgs = [code, reason]; }
+  }
+  let messages = 0;
+  const connection = connectTwinSocket('wss://twin.example.test/ws/twin', 'opaque-scope-token', {
+    WebSocketImpl: FakeWebSocket, timeoutMs: 50, onMessage: () => messages++
+  });
+  assert.deepEqual(connection.socket.protocols, ['vista.twin.opaque-scope-token']);
+  connection.socket.open();
+  await connection.opened;
+  connection.socket.send('{}');
+  assert.equal(messages, 1);
+
+  const stalled = connectTwinSocket('wss://twin.example.test/ws/twin', 'fresh-scope-token', { WebSocketImpl: FakeWebSocket, timeoutMs: 5 });
+  await assert.rejects(stalled.opened, /handshake timed out/i);
+  assert.deepEqual(stalled.socket.closeArgs, [1000, 'viewer handshake timeout']);
+  assert.throws(() => connectTwinSocket('wss://twin.example.test/ws/twin', 'bad token', { WebSocketImpl: FakeWebSocket }), /invalid Twin viewer scope/i);
 });

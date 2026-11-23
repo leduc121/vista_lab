@@ -8,9 +8,10 @@
   "scripts": {
     "build:renderer": "node scripts/build-renderer.cjs",
     "typecheck": "node scripts/check-source.cjs",
-    "test": "node tests/api.contract.test.cjs && node --test tests/robot-runtime.test.cjs tests/edge-supervisor.test.cjs tests/device-provisioning.test.cjs",
+    "test": "node tests/api.contract.test.cjs && node --test --test-concurrency=1 tests/robot-runtime.test.cjs tests/edge-supervisor.test.cjs tests/device-provisioning.test.cjs tests/teleoperation.test.cjs tests/container-port-forwarder.test.cjs",
     "test:integration": "node scripts/integration-acceptance.cjs",
     "smoke": "npm run build:renderer && node scripts/desktop-smoke.cjs",
+    "smoke:electron": "npm run build:renderer && node scripts/electron-smoke.cjs",
     "start": "npm run build:renderer && node scripts/start-electron.cjs",
     "build:edge-runtime": "node scripts/run-edge-build.cjs",
     "dist": "npm run build:edge-runtime && npm run build:renderer && electron-builder --linux AppImage deb",
