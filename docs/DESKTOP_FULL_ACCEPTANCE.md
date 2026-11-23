@@ -17,7 +17,7 @@
 | Trajectory library and evidence | Runtime evidence/result handling exists in the application contracts and workflows. | **PARTIAL / BLOCKED**. Recording library, playback/seek/export, evidence attachment/upload/retrieval and instructor review were not accepted end-to-end in this run. |
 | ACT / SmolVLA | ACT adapter executed real CPU `select_action()` for the pinned checkpoint, as recorded in [ACT acceptance](desktop/HF_ACT_ACCEPTANCE_2026-11-22.md). Inference is isolated from action mapping. | **ACT inference-only PASS**. Joint order and units are unresolved; no ACT output may drive MuJoCo/Twin/robot. SmolVLA real inference is unverified. |
 | Linux packaging | `npm run dist` completed on Linux x64 using Python 3.11.16. AppImage and DEB emitted; packaged Electron opened under Xvfb; the packaged Edge executable loaded the packaged model under EGL and shut down by protocol. | **PASS** for build and local launch/runtime smoke. Not a clean-machine install. AppImage required extract-and-run because host lacks FUSE; that wrapper needed manual termination after its window check. OSMesa is unavailable, so the OSMesa backend is not packaged. |
-| Windows / macOS packaging | Configuration exists. | **NOT TESTED** on native Windows/macOS runners. |
+| Windows / macOS packaging | Latest PR native matrix built Linux AppImage/DEB and macOS ARM64 DMG. Windows NSIS job failed; the job log could not be retrieved during this assessment because `api.github.com` DNS was unavailable. | **PARTIAL**. macOS ARM64 build passed; Windows requires failure diagnosis and a passing rebuild. Neither platform has clean-machine runtime acceptance. |
 | Physical hardware | Physical mode remains locked; no follower output path is available. | **BLOCKED** pending attached SO-101 hardware, supervised calibration/safety acceptance, and explicit authorization. |
 
 ## Verification results
@@ -42,7 +42,7 @@ The first PR CI matrix exposed a test-only global EGL override that failed on he
 
 The follow-up matrix found that `npm ci` could not use the stale lockfile; it now includes the missing transitive entries without changing versions of existing locked packages. Windows Python mode bits do not represent NTFS DACLs, so the MQTT client now refuses connections on Windows until explicit DACL validation exists. The native CI matrix targets Apple Silicon macOS because the pinned MuJoCo version has no Mac Intel wheel and pip would attempt a source build. The Linux-only esbuild binary is now an optional dependency; cross-platform dry runs pass for macOS ARM64 and Windows x64.
 
-The next CI pass confirmed all three Python suites, but found a timing-sensitive Node fake-teleoperation test and the Linux-only esbuild tarball was still a required dependency. The test now sends requests interactively so it timestamps each command at dispatch, and the esbuild package is optional. A fresh native matrix is pending.
+The latest native CI matrix on PR #1 (commit `9644ae9`) passed Linux AppImage/DEB and macOS ARM64 DMG jobs. The Windows NSIS job failed. Its log was unavailable at assessment time because the GitHub API hostname did not resolve; the failure cause is therefore unresolved. See [the native matrix run](https://github.com/leduc121/vista_lab/actions/runs/45157390150) for job details. The Windows MQTT mTLS path remains fail-closed until NTFS DACL validation is implemented.
 
 ## Remaining issues
 
@@ -55,7 +55,7 @@ The next CI pass confirmed all three Python suites, but found a timing-sensitive
 
 ### P2
 
-- Windows NSIS and macOS DMG native builds/runtime checks are outstanding.
+- Diagnose and rerun the failed Windows NSIS native job. Clean-machine runtime acceptance remains outstanding for Windows and macOS; the macOS ARM64 DMG build succeeded in CI.
 - Clean-machine Linux install, broader accessibility/small-window review, repeated-navigation recovery, and packaged app shutdown acceptance remain outstanding.
 - OSMesa is absent on this build host. EGL model loading works; camera rendering on a target host still depends on its EGL/GPU drivers.
 - Public release requires asset redistribution, signing, update and release approval gates in `docs/desktop/RELEASE_CHECKLIST.md`.
