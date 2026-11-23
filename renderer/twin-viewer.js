@@ -56,6 +56,23 @@ function toUrdfRadians(name, reading) {
   return Number.isFinite(value) && value >= JOINTS[name].lower && value <= JOINTS[name].upper ? value : null;
 }
 
+export function frameJointTargets(frame, now = Date.now()) {
+  if (!frame || frame.connection !== 'connected') return {};
+  const measuredAt = Date.parse(frame.measured_at);
+  if (!Number.isFinite(measuredAt) || now - measuredAt > 5000) return {};
+  const readings = frame.source_mode === 'LIVE_PHYSICAL'
+    ? (frame.calibration_status === 'VERIFIED' ? frame.calibrated : frame.measured)
+    : frame.measured;
+  if (!Array.isArray(readings)) return {};
+  const targets = {};
+  for (const name of JOINT_NAMES) {
+    const reading = readings.find((entry) => entry.name === name);
+    const value = reading && toUrdfRadians(name, reading);
+    if (value !== null && value !== undefined) targets[name] = value;
+  }
+  return targets;
+}
+
 function toArrayBuffer(value) {
   if (value instanceof ArrayBuffer) return value;
   if (value?.data) return Uint8Array.from(value.data).buffer;
@@ -111,7 +128,6 @@ export async function mountTwinViewer(host, onDisposeReady = () => {}) {
 
   let disposed = false;
   let released = false;
-  let latest = null;
   let robot = null;
   let targets = {};
   const meshCache = new Map();
@@ -165,21 +181,7 @@ export async function mountTwinViewer(host, onDisposeReady = () => {}) {
   resize.observe(host);
   let lastFrameTime = performance.now();
   renderer.setAnimationLoop((now) => {
-    const frame = latest;
     if (robot) {
-      if (frame) {
-        const readings = frame.source_mode === 'LIVE_PHYSICAL'
-          ? (frame.calibration_status === 'VERIFIED' ? frame.calibrated : null)
-          : frame.measured;
-        if (readings) {
-          for (const name of JOINT_NAMES) {
-            const reading = readings.find((entry) => entry.name === name);
-            const value = reading && toUrdfRadians(name, reading);
-            const joint = robot.joints[JOINTS[name].urdf];
-            if (joint && value !== null && value !== undefined) targets[name] = value;
-          }
-        }
-      }
       const elapsed = Math.min(50, now - lastFrameTime);
       for (const name of JOINT_NAMES) {
         const joint = robot.joints[JOINTS[name].urdf];
@@ -215,22 +217,9 @@ export async function mountTwinViewer(host, onDisposeReady = () => {}) {
   }
 
   const setFrame = (frame) => {
-    latest = frame;
-    if (!frame) {
-      targets = Object.fromEntries(JOINT_NAMES.map((name) => [name, 0]));
-      return;
-    }
-    const readings = frame?.source_mode === 'LIVE_PHYSICAL'
-      ? (frame.calibration_status === 'VERIFIED' ? frame.calibrated : frame.measured)
-      : frame?.measured;
-    if (readings) {
-      targets = {};
-      for (const name of JOINT_NAMES) {
-        const reading = readings.find((entry) => entry.name === name);
-        const value = reading && toUrdfRadians(name, reading);
-        if (value !== null && value !== undefined) targets[name] = value;
-      }
-    }
+    // Freeze at the last displayed pose on stale/disconnected telemetry.
+    // A read-only viewer must not animate home after its data source is lost.
+    targets = frameJointTargets(frame);
   };
   return {
     setFrame,

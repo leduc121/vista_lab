@@ -1,7 +1,7 @@
 import * as Blockly from 'blockly';
 import 'blockly/blocks';
 import { mountTwinViewer, parseTwinFrame } from './twin-viewer.js';
-import { connectTwinSocket } from './twin-connection.js';
+import { connectTwinSocket, twinHeartbeatStatus } from './twin-connection.js';
 import './features.css';
 
 
@@ -646,9 +646,11 @@ async function renderTwinPage(lab = null) {
     catch (e) { endpointState.textContent = e.message; }
   };
   let viewer, socket = null, staleTimer = null, reconnectTimer = null, disposed = false;
+  let lastTelemetryAt = null;
   let cancelViewer = () => {};
   const disconnect = (message = 'Disconnected') => {
     clearTimeout(staleTimer); clearTimeout(reconnectTimer); staleTimer = reconnectTimer = null;
+    lastTelemetryAt = null;
     if (socket) { const current = socket; socket = null; current.onopen = current.onmessage = current.onerror = current.onclose = null; try { current.close(1000, 'viewer closed'); } catch {} }
     viewer?.setFrame(null); joints.replaceChildren(); status.textContent = message; note.textContent = 'Telemetry disconnected';
   };
@@ -670,13 +672,17 @@ async function renderTwinPage(lab = null) {
     if (!robots.length) { robotSelect.replaceChildren(new Option('No allocated SO-101 available', '')); status.textContent = 'No eligible robot'; }
   } catch (e) { robotSelect.replaceChildren(new Option('Robot access unavailable', '')); status.textContent = 'Disconnected'; error.hidden = false; error.textContent = apiErrorMessage(e); }
   const renderFrame = (frame) => {
+    lastTelemetryAt = Date.now();
     viewer.setFrame(frame);
     const readings = frame.source_mode === 'LIVE_PHYSICAL' && frame.calibration_status === 'VERIFIED' ? frame.calibrated : frame.measured;
     joints.innerHTML = (readings || []).map((entry) => `<div><span>${escapeHtml(entry.name)}</span><strong>${Number(entry.position).toFixed(3)} ${escapeHtml(entry.unit)}</strong></div>`).join('');
     const age = Math.max(0, Date.now() - Date.parse(frame.measured_at));
     status.textContent = age > 5000 || frame.connection === 'stale' ? 'Stale telemetry' : `Connected · ${frame.source_mode}`;
     note.textContent = `${frame.source_mode} · ${frame.controller_id} · ${new Date(frame.measured_at).toLocaleTimeString()}`;
-    clearTimeout(staleTimer); staleTimer = setTimeout(() => { if (!disposed) status.textContent = 'Stale telemetry · no recent frame'; }, 5000);
+    clearTimeout(staleTimer); staleTimer = setTimeout(() => {
+      if (!disposed) status.textContent = socket?.readyState === WebSocket.OPEN
+        ? 'Stale telemetry · connection heartbeat active' : 'Stale telemetry · no recent frame';
+    }, 5000);
   };
   connectButton.onclick = async () => {
     connectButton.disabled = true; error.hidden = true; disconnect('Requesting attempt-bound access…');
@@ -694,7 +700,7 @@ async function renderTwinPage(lab = null) {
         onMessage: (event) => {
           try {
             const raw = JSON.parse(event.data);
-            if (raw?.type === 'heartbeat') { status.textContent = 'Connected · heartbeat'; clearTimeout(staleTimer); staleTimer = setTimeout(() => { if (!disposed) status.textContent = 'Stale telemetry · heartbeat missed'; }, 15000); return; }
+            if (raw?.type === 'heartbeat') { status.textContent = twinHeartbeatStatus(lastTelemetryAt); return; }
             const frame = parseTwinFrame(raw, scope.robotId);
             if (!frame) return;
             if (frame.attempt_id && frame.attempt_id !== scope.attemptId) { disconnect('Rejected mismatched attempt telemetry'); error.hidden = false; error.textContent = 'Twin frame attempt did not match the authorized lab attempt.'; return; }

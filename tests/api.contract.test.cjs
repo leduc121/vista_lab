@@ -331,15 +331,26 @@ test('Twin parser requires six measured SO-101 joints and rejects wrong robot fr
   loaded.filename = entry;
   loaded.paths = Module._nodeModulePaths(__dirname);
   loaded._compile(output, entry);
-  const { parseTwinFrame } = loaded.exports;
+  const { parseTwinFrame, frameJointTargets } = loaded.exports;
   const measured = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper']
     .map((name) => ({ name, position: 0, unit: 'rad' }));
   const frame = { schema_version: 1, robot_id: 'robot-a', source_mode: 'SIMULATION', connection: 'connected',
-    calibration_status: 'NOT_APPLICABLE', sequence: 1, controller_id: 'test', measured_at: new Date().toISOString(), measured };
+    calibration_status: 'NOT_APPLICABLE', sequence: 1, controller_id: 'test', measured_at: new Date(10000).toISOString(), measured };
   assert.equal(parseTwinFrame(frame, 'robot-a'), frame);
   assert.equal(parseTwinFrame({ ...frame, measured: undefined }, 'robot-a'), null);
   assert.equal(parseTwinFrame({ ...frame, measured: measured.slice(1) }, 'robot-a'), null);
   assert.equal(parseTwinFrame(frame, 'robot-b'), null);
+  const readings = [...measured].reverse().map((reading) => ({ ...reading }));
+  readings.find((reading) => reading.name === 'shoulder_pan').position = 45;
+  readings.find((reading) => reading.name === 'shoulder_pan').unit = 'deg';
+  readings.find((reading) => reading.name === 'gripper').position = 50;
+  readings.find((reading) => reading.name === 'gripper').unit = 'percent';
+  assert.deepEqual(frameJointTargets({ ...frame, measured: readings }, 10000), {
+    shoulder_pan: Math.PI / 4, shoulder_lift: 0, elbow_flex: 0, wrist_flex: 0, wrist_roll: 0
+  });
+  assert.deepEqual(frameJointTargets({ ...frame, connection: 'stale' }, 10000), {});
+  assert.deepEqual(frameJointTargets(frame, 15001), {});
+  assert.deepEqual(frameJointTargets(null, 10000), {});
 });
 
 test('Twin WebSocket client uses the viewer subprotocol, wires frames before open, and bounds a stalled handshake', async () => {
@@ -349,7 +360,7 @@ test('Twin WebSocket client uses the viewer subprotocol, wires frames before ope
   const entry = path.resolve(__dirname, '../renderer/twin-connection.js');
   const output = esbuild.buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false, logLevel: 'silent' }).outputFiles[0].text;
   const loaded = new Module(entry, module); loaded.filename = entry; loaded.paths = Module._nodeModulePaths(__dirname); loaded._compile(output, entry);
-  const { connectTwinSocket } = loaded.exports;
+  const { connectTwinSocket, twinHeartbeatStatus } = loaded.exports;
   class FakeWebSocket {
     static CONNECTING = 0;
     constructor(url, protocols) { this.url = url; this.protocols = protocols; this.readyState = FakeWebSocket.CONNECTING; FakeWebSocket.last = this; }
@@ -371,4 +382,7 @@ test('Twin WebSocket client uses the viewer subprotocol, wires frames before ope
   await assert.rejects(stalled.opened, /handshake timed out/i);
   assert.deepEqual(stalled.socket.closeArgs, [1000, 'viewer handshake timeout']);
   assert.throws(() => connectTwinSocket('wss://twin.example.test/ws/twin', 'bad token', { WebSocketImpl: FakeWebSocket }), /invalid Twin viewer scope/i);
+  assert.equal(twinHeartbeatStatus(null, 10000), 'Connected · awaiting telemetry');
+  assert.equal(twinHeartbeatStatus(8000, 10000), 'Connected · heartbeat');
+  assert.equal(twinHeartbeatStatus(4000, 10000), 'Stale telemetry · connection heartbeat active');
 });

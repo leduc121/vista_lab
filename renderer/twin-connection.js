@@ -1,4 +1,11 @@
 /** Browser WebSocket setup with the authenticated viewer subprotocol and a bounded handshake. */
+export function twinHeartbeatStatus(lastTelemetryAt, now = Date.now()) {
+  if (!Number.isFinite(lastTelemetryAt)) return 'Connected · awaiting telemetry';
+  return now - lastTelemetryAt > 5000
+    ? 'Stale telemetry · connection heartbeat active'
+    : 'Connected · heartbeat';
+}
+
 export function connectTwinSocket(url, token, {
   WebSocketImpl = WebSocket,
   timeoutMs = 10000,

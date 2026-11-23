@@ -25,13 +25,10 @@
     "blockly": "file:vendor/deps/blockly-13.4.0.tgz",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
-    "esbuild": "file:vendor/deps/esbuild-0.21.5.tgz",
+    "esbuild": "0.21.5",
     "puppeteer-core": "^25.16.0",
     "three": "file:vendor/deps/three-0.186.1.tgz",
     "urdf-loader": "file:vendor/deps/urdf-loader-0.13.1.tgz"
-  },
-  "optionalDependencies": {
-    "@esbuild/linux-x64": "file:vendor/deps/esbuild-linux-x64-0.21.5.tgz"
   },
   "build": {
     "appId": "edu.vista.labstation",

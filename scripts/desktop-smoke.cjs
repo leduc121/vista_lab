@@ -1,17 +1,41 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
+const net = require('node:net');
 const path = require('node:path');
 const puppeteer = require('puppeteer-core');
 
 const root = path.join(__dirname, '..');
 const out = '/tmp/vista-desktop-smoke';
-const server = spawn(process.execPath, [path.join(root, 'dev/server.mjs')], { cwd: root, stdio: 'ignore' });
+let server;
 let browser;
 let page;
 let lastSuccessfulStep = 'starting smoke runner';
 const rendererErrors = [];
 const originalLog = console.log.bind(console);
 console.log = (...args) => { lastSuccessfulStep = args.map((item) => typeof item === 'string' ? item : JSON.stringify(item)).join(' '); originalLog(...args); };
+async function unusedLoopbackPort() {
+  const probe = net.createServer();
+  await new Promise((resolve, reject) => {
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', resolve);
+  });
+  const { port } = probe.address();
+  await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+  return port;
+}
+
+async function waitForPreview(url, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(500) });
+      if (response.ok) return;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('The isolated Desktop preview server did not become ready.');
+}
+
 const bounded = (promise, label, ms = 12000) => Promise.race([
   promise,
   new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms))
@@ -19,6 +43,13 @@ const bounded = (promise, label, ms = 12000) => Promise.race([
 
 async function main() {
   fs.mkdirSync(out, { recursive: true });
+  const port = await unusedLoopbackPort();
+  const previewUrl = `http://127.0.0.1:${port}`;
+  server = spawn(process.execPath, [path.join(root, 'dev/server.mjs')], {
+    cwd: root, stdio: 'ignore', env: { ...process.env, PORT: String(port) }
+  });
+  server.once('error', (error) => { throw error; });
+  await waitForPreview(`${previewUrl}/dev/index.html`);
   const chrome = '/usr/bin/google-chrome-stable';
   browser = await puppeteer.launch({ executablePath: chrome, headless: true, args: ['--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
   page = await browser.newPage();
@@ -36,7 +67,7 @@ async function main() {
   page.on('pageerror', (error) => { errors.push(error.message); rendererErrors.push(error.message); });
   page.on('dialog', (dialog) => { void dialog.accept(); });
   await page.setViewport({ width: 1420, height: 960 });
-  await page.goto('http://127.0.0.1:4173/dev/index.html?screen=labs', { waitUntil: 'networkidle0' });
+  await page.goto(`${previewUrl}/dev/index.html?screen=labs`, { waitUntil: 'networkidle0' });
   await page.evaluate(() => {
     const bridge = window.vista;
     window.__vistaSmokeFailedCalls = bridge?.__demoFailures || [];
@@ -259,5 +290,5 @@ main().catch(async (error) => {
   process.exitCode = 1;
 }).finally(async () => {
   if (browser) await browser.close();
-  server.kill('SIGTERM');
+  server?.kill('SIGTERM');
 });
