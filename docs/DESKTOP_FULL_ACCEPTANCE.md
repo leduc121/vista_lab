@@ -17,7 +17,7 @@
 | Trajectory library and evidence | Learner artifact listing and signed download use the authenticated Education API routes. Backend evidence storage persists runtime telemetry and verifies object digest/size before exposing an artifact; missing objects are returned unavailable. | **PARTIAL / BLOCKED**. The API has no student capture/upload route for local Desktop trajectories. Evidence is produced by the backend runtime, and instructor retrieval is an authenticated teacher route. Object storage and an authorized simulation evidence producer were not available for end-to-end acceptance. |
 | ACT / SmolVLA | ACT adapter executed real CPU `select_action()` for the pinned checkpoint, as recorded in [ACT acceptance](desktop/HF_ACT_ACCEPTANCE_2026-11-22.md). Inference is isolated from action mapping. | **ACT inference-only PASS**. Joint order and units are unresolved; no ACT output may drive MuJoCo/Twin/robot. SmolVLA real inference is unverified. |
 | Linux packaging | `npm run dist` completed on Linux x64 using Python 3.11.16. AppImage and DEB emitted; packaged Electron opened under Xvfb; the packaged Edge executable loaded the packaged model under EGL and shut down by protocol. | **PASS** for build and local launch/runtime smoke. Not a clean-machine install. AppImage required extract-and-run because host lacks FUSE; that wrapper needed manual termination after its window check. OSMesa is unavailable, so the OSMesa backend is not packaged. |
-| Windows / macOS packaging | Latest PR native matrix built Linux AppImage/DEB and macOS ARM64 DMG. Windows failed during `npm ci`: the vendored esbuild package shipped a Linux ELF, while the lock had no `@esbuild/win32-x64`. The package now uses registry esbuild 0.21.5 with its full platform-optional lock entries. | **PENDING CI**. Linux and macOS ARM64 native builds passed on the earlier matrix. Windows needs a new native NSIS run against this fix; clean-machine runtime acceptance is still open. |
+| Windows / macOS packaging | Native matrix run [45169792218](https://github.com/leduc121/vista_lab/actions/runs/45169792218) passed Windows NSIS, Linux AppImage/DEB, and macOS ARM64 DMG. Windows completed Edge tests, `npm ci`, Node tests, runtime builds, and NSIS packaging. | **PASS for packaging**. Windows and macOS clean-machine startup/runtime acceptance remains open. |
 | Physical hardware | Physical mode remains locked; no follower output path is available. | **BLOCKED** pending attached SO-101 hardware, supervised calibration/safety acceptance, and explicit authorization. |
 
 ## Verification results
@@ -34,7 +34,8 @@
 | `VISTA_EDGE_PYTHON=edge/.venv/bin/python npm run dist` | **PASS**; Linux x64 AppImage and DEB |
 | Packaged Linux Electron launch | **PASS** under Xvfb with sandbox enabled (unpacked output and AppImage extract-and-run) |
 | Packaged Edge runtime | **PASS**; bundled scene loaded with `MUJOCO_GL=egl`, simulation available, `stop` returned safely |
-| `npm ci` after esbuild source fix | **PASS** on Linux; installed platform-aware esbuild 0.21.5. The lock includes 23 platform packages and pins `@esbuild/win32-x64` 0.21.5. |
+| `npm ci` after esbuild source fix | **PASS** on Linux and Windows; installed platform-aware esbuild 0.21.5. The lock includes 23 platform packages and pins `@esbuild/win32-x64` 0.21.5. |
+| Native CI matrix on PR #1 | **PASS** on commit `b2cd5f3`; Windows NSIS, Linux AppImage/DEB, and macOS ARM64 DMG all built successfully. |
 | `npm run dist` after esbuild fix | **PASS**; rebuilt Linux AppImage and DEB. |
 | Current isolated LMS rerun | **BLOCKED before startup**; required port 54323 is owned by an active `local-jwks-server.mjs`. The existing listener and services were left untouched. |
 | `git diff --check` | **PASS** |
@@ -45,7 +46,7 @@ The first PR CI matrix exposed a test-only global EGL override that failed on he
 
 The follow-up matrix found that `npm ci` could not use the stale lockfile; it now includes the missing transitive entries without changing versions of existing locked packages. Windows Python mode bits do not represent NTFS DACLs, so the MQTT client now refuses connections on Windows until explicit DACL validation exists. The native CI matrix targets Apple Silicon macOS because the pinned MuJoCo version has no Mac Intel wheel and pip would attempt a source build. The Linux-only esbuild binary is now an optional dependency; cross-platform dry runs pass for macOS ARM64 and Windows x64.
 
-The latest native CI matrix on PR #1 (commit `9644ae9`) passed Linux AppImage/DEB and macOS ARM64 DMG. Its Windows log showed `npm ci` trying to execute the vendored Linux ELF after failing to find `@esbuild/win32-x64`. Esbuild is now pinned to the same 0.21.5 release from the platform-aware npm package, and the lock contains all platform-specific optional packages. A native Windows rerun is required to confirm the fix. The Windows MQTT mTLS path remains fail-closed until NTFS DACL validation is implemented.
+The original Windows failure came from a vendored esbuild Linux ELF and a lockfile without `@esbuild/win32-x64`. The platform-aware esbuild 0.21.5 package and complete optional dependency lock fixed `npm ci`; the next run exposed a POSIX-only file URL in the trusted-frame test fixture. That test now creates its URL using the host path and URL APIs. Native matrix run [45169792218](https://github.com/leduc121/vista_lab/actions/runs/45169792218) passed all three packaging targets. The Windows MQTT mTLS path remains fail-closed until NTFS DACL validation is implemented.
 
 ## Remaining issues
 
@@ -58,7 +59,7 @@ The latest native CI matrix on PR #1 (commit `9644ae9`) passed Linux AppImage/DE
 
 ### P2
 
-- Rerun the Windows NSIS native job with the esbuild fix. Clean-machine runtime acceptance remains outstanding for Windows and macOS; the macOS ARM64 DMG build succeeded in CI.
+- Clean-machine runtime acceptance remains outstanding for Windows and macOS; all three native packaging targets now build in CI.
 - Clean-machine Linux install, broader accessibility/small-window review, repeated-navigation recovery, and packaged app shutdown acceptance remain outstanding.
 - OSMesa is absent on this build host. EGL model loading works; camera rendering on a target host still depends on its EGL/GPU drivers.
 - Public release requires asset redistribution, signing, update and release approval gates in `docs/desktop/RELEASE_CHECKLIST.md`.
