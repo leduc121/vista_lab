@@ -56,6 +56,7 @@ class MqttTransportTests(unittest.TestCase):
         self.transport.disconnect()
         self.temp.cleanup()
 
+    @unittest.skipIf(os.name == "nt", "Windows MQTT mTLS remains disabled until DACL validation is implemented")
     def test_tls_connection_and_authorized_command_ack(self):
         with patch.dict("sys.modules", self.modules):
             state = self.transport.connect()
@@ -73,6 +74,7 @@ class MqttTransportTests(unittest.TestCase):
         self.assertEqual(self.transport.client.published[-1][1]["status"], "accepted")
         self.assertEqual(self.transport.publish_telemetry({"status": "ok"}), True)
 
+    @unittest.skipIf(os.name == "nt", "Windows MQTT mTLS remains disabled until DACL validation is implemented")
     def test_expired_duplicate_and_unauthorized_commands_never_reach_handler(self):
         with patch.dict("sys.modules", self.modules):
             self.transport.connect()
@@ -88,6 +90,7 @@ class MqttTransportTests(unittest.TestCase):
         self.assertEqual(self.executed, [])
         self.assertEqual([row[1]["status"] for row in self.transport.client.published], ["rejected", "rejected", "rejected"])
 
+    @unittest.skipIf(os.name == "nt", "Windows MQTT mTLS remains disabled until DACL validation is implemented")
     def test_duplicate_rejected_after_process_restart(self):
         with patch.dict("sys.modules", self.modules):
             self.transport.connect()
@@ -107,6 +110,7 @@ class MqttTransportTests(unittest.TestCase):
         self.assertTrue(restarted.status()["dedupePersistent"])
         restarted.disconnect()
 
+    @unittest.skipIf(os.name == "nt", "Windows MQTT mTLS remains disabled until DACL validation is implemented")
     def test_retained_commands_are_never_executed(self):
         with patch.dict("sys.modules", self.modules):
             self.transport.connect()
@@ -118,6 +122,7 @@ class MqttTransportTests(unittest.TestCase):
         self.assertEqual(self.executed, [])
         self.assertEqual(self.transport.client.published[-1][1]["status"], "rejected")
 
+    @unittest.skipIf(os.name == "nt", "Windows MQTT mTLS remains disabled until DACL validation is implemented")
     def test_servo_and_joint_setpoint_payloads_are_rejected(self):
         with patch.dict("sys.modules", self.modules):
             self.transport.connect()
@@ -130,11 +135,17 @@ class MqttTransportTests(unittest.TestCase):
         self.assertEqual(self.executed, [])
         self.assertEqual(self.transport.client.published[-1][1]["status"], "rejected")
 
+    @unittest.skipIf(os.name == "nt", "POSIX file modes are not available on Windows")
     def test_private_key_permissions_fail_closed(self):
         os.chmod(self.paths[2], 0o644)
         with patch.dict("sys.modules", self.modules):
             with self.assertRaises(PermissionError):
                 self.transport.connect()
+
+    @unittest.skipUnless(os.name == "nt", "Windows-only MQTT fail-closed policy")
+    def test_windows_mqtt_fails_closed_without_dacl_validation(self):
+        with self.assertRaisesRegex(PermissionError, "ACL validation is unavailable on Windows"):
+            self.transport.connect()
 
 
 if __name__ == "__main__":

@@ -84,6 +84,11 @@ class MqttTransport:
         for filename in (self.ca_file, self.cert_file, self.key_file):
             if not Path(filename).is_file():
                 raise RuntimeError("Provisioned CA/certificate/key files are incomplete.")
+        if os.name == "nt":
+            # Python's Windows st_mode does not expose the file's DACL. Fail
+            # closed until the runtime can validate the effective ACL instead
+            # of treating POSIX mode bits as an ACL check.
+            raise PermissionError("MQTT private-key ACL validation is unavailable on Windows; transport remains disabled.")
         mode = os.stat(self.key_file).st_mode & 0o777
         if mode & 0o077:
             raise PermissionError("Device private key file must be restricted to its owner (0600).")

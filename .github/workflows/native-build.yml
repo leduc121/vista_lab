@@ -30,8 +30,6 @@ jobs:
             target: --linux AppImage deb
           - os: windows-latest
             target: --win nsis
-          - os: macos-15-intel
-            target: --mac dmg --x64
           - os: macos-15
             target: --mac dmg --arm64
     runs-on: ${{ matrix.os }}

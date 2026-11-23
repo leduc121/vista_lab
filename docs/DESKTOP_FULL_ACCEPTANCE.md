@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | Electron shell and navigation | Native Electron Demo workflow passed: login, Labs, attempt/workspace, save/version, schematic result, physical lock. Packaged Linux app opened under Xvfb. | **PASS** for local Demo workflow; real-backend Electron UI journey and broad accessibility review remain open. |
 | Education Platform | Disposable GoTrue, Education API and PostgreSQL journey passed login/refresh, learning, assignment, attempt, Blockly save/version, schematic run/events/result, submission, projection, foreign-user denial, and independent DB readback. | **PASS** for the exercised local contracts. Temporary-password case skipped; file evidence/object storage and instructor review were not provisioned. |
-| Robot connection and calibration | Role-specific discovery/configuration, guided calibration/profile workflow, errors, and safety gates are implemented and fake-device tested. | **PASS** for mock paths. No serial device or physical calibration was run; packaged LeRobot is unavailable. |
+| Robot connection and calibration | Role-specific discovery/configuration, guided calibration/profile workflow, errors, and safety gates are implemented and fake-device tested. | **PASS** for mock paths. No serial device or physical calibration was run; packaged LeRobot is unavailable. Windows MQTT mTLS remains locked until NTFS DACL validation is implemented. |
 | Leader/follower teleoperation | Two isolated pairs, arm/deadman, watchdog, stop/reset, loss handling, bounded commands, and fake feedback passed Python, Node and Chromium acceptance. | **PASS** for fake runtime only. No physical command API is exposed. |
 | MuJoCo SO-101 simulation | Six-joint scene, allowlisted execution, measured frames, authorization/confirmation, pause/cancel and policy simulation tests passed. Linux bundled runtime loaded the packaged scene under EGL and reported simulation available. | **PASS** for Linux simulation runtime. No simulator data is represented as physical measurement. |
 | Digital Twin | Viewer, joint validation, freshness, provenance, no-eligible-robot state and policy Twin viewer are implemented and locally tested. | **PARTIAL**. Live attempt-authorized WebSocket was skipped in the isolated run; there is no student-authorized Desktop telemetry ingestion contract for local MuJoCo frames. |
@@ -25,7 +25,7 @@
 | Command / check | Result |
 | --- | --- |
 | `npm test` | **39 passed, 0 failed** |
-| `edge/.venv/bin/python -m unittest discover -s edge/tests -v` | **51 passed, 0 failed**; includes MuJoCo and fake teleoperation |
+| `edge/.venv/bin/python -m unittest discover -s edge/tests -v` | **51 passed, 0 failed, 1 skipped**; includes MuJoCo and fake teleoperation. The Windows-only ACL fail-closed test is skipped on Linux. |
 | `npm run typecheck` | **PASS** (JavaScript syntax checks; no TypeScript compiler configured) |
 | `npm run build:renderer` | **PASS** |
 | `npm run smoke` | **PASS**; Demo UI, workspace, save/version, result/Twin picker, Robot Station and fake-pair safety flow |
@@ -39,6 +39,8 @@
 The first packaged runtime probe exposed a missing PyInstaller hidden import for `OpenGL.platform.egl`, which made the packaged simulation unavailable when Electron set `MUJOCO_GL=egl`. `scripts/build-edge-runtime.py` now includes that import. The rebuilt Linux package passed the EGL runtime check.
 
 The first PR CI matrix exposed a test-only global EGL override that failed on headless Linux and non-EGL platforms. The override was removed; camera observation unit coverage now mocks the GL renderer boundary while checking camera configuration and output schema. The full 51-test Edge suite passes locally after this correction; the follow-up CI matrix is pending.
+
+The follow-up matrix found that `npm ci` could not use the stale lockfile; it now includes the missing transitive entries without changing versions of existing locked packages. Windows Python mode bits do not represent NTFS DACLs, so the MQTT client now refuses connections on Windows until explicit DACL validation exists. The native CI matrix targets Apple Silicon macOS because the pinned MuJoCo version has no Mac Intel wheel and pip would attempt a source build.
 
 ## Remaining issues
 

@@ -8,7 +8,8 @@ complete current matrix and blockers are in
 
 - `npm test`: **39 passed, 0 failed**.
 - `edge/.venv/bin/python -m unittest discover -s edge/tests -v`:
-  **51 passed, 0 failed**, including MuJoCo and fake-only teleoperation.
+  **51 passed, 0 failed, 1 skipped** on Linux, including MuJoCo and fake-only
+  teleoperation. The Windows-only ACL fail-closed test is platform-skipped.
 - `npm run typecheck`, `npm run build:renderer`, `npm run smoke`, and
   `npm run smoke:electron`: **passed**. UI smokes use Demo fixtures and fake
   devices; they do not represent backend persistence or physical operation.
@@ -30,6 +31,11 @@ complete current matrix and blockers are in
 - No Windows/macOS build, real Twin session, evidence-storage service,
   physical hardware session, Production/AWS access, publication, or merge was
   performed.
+- Follow-up CI review found a stale npm lockfile, Windows POSIX-mode
+  assumptions in MQTT fakes, and unsupported MuJoCo Intel Mac source builds.
+  The lockfile is synchronized without changing existing locked versions;
+  Windows MQTT now fails closed pending ACL validation; the native matrix uses
+  Apple Silicon macOS. The corrected matrix is awaiting completion.
 
 Backend contracts were read only from the latest available backend sprint source. No backend writes, Production/AWS calls, upload, or physical robot access occurred. **Local release candidate only; live integration and public release are not accepted.** Earlier Queue 1–4 reports are historical; the hashes and results below supersede earlier package hashes.
 
