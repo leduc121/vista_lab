@@ -38,6 +38,8 @@
 
 The first packaged runtime probe exposed a missing PyInstaller hidden import for `OpenGL.platform.egl`, which made the packaged simulation unavailable when Electron set `MUJOCO_GL=egl`. `scripts/build-edge-runtime.py` now includes that import. The rebuilt Linux package passed the EGL runtime check.
 
+The first PR CI matrix exposed a test-only global EGL override that failed on headless Linux and non-EGL platforms. The override was removed; camera observation unit coverage now mocks the GL renderer boundary while checking camera configuration and output schema. The full 51-test Edge suite passes locally after this correction; the follow-up CI matrix is pending.
+
 ## Remaining issues
 
 ### P1 / blocked by external contract or infrastructure

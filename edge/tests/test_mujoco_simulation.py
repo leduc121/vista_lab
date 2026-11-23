@@ -1,10 +1,8 @@
 import importlib.util
-import os
 import time
 import unittest
 from pathlib import Path
-
-os.environ.setdefault("MUJOCO_GL", "egl")
+from unittest.mock import patch
 
 from edge.mujoco_simulation import MuJoCoSimulation
 
@@ -29,16 +27,32 @@ class MuJoCoSimulationTests(unittest.TestCase):
         self.assertEqual(status["model"], "scene.xml")
         self.assertFalse(status["motionEnabled"])
 
-    def test_policy_observation_renders_declared_virtual_camera_and_six_joint_state(self):
+    def test_policy_observation_maps_virtual_camera_and_six_joint_state(self):
         class Feature:
             def __init__(self, shape): self.shape = shape
-        observation = self.simulation.policy_observation({
-            "observation.state": Feature((6,)),
-            "observation.images.front": Feature((3, 64, 80)),
-        })
+        simulation = self.simulation
+        class Renderer:
+            def __init__(self, _model, *, height, width):
+                self.image = simulation.np.zeros((height, width, 3), dtype="uint8")
+                self.camera = None
+            def update_scene(self, _data, *, camera): self.camera = camera
+            def render(self): return self.image
+
+        rendered = []
+        renderer_factory = lambda model, **kwargs: Renderer(model, **kwargs)
+        with patch.dict("os.environ", {"MUJOCO_GL": "egl"}), patch.object(
+            self.simulation.mujoco, "Renderer", side_effect=renderer_factory
+        ):
+            observation = self.simulation.policy_observation({
+                "observation.state": Feature((6,)),
+                "observation.images.front": Feature((3, 64, 80)),
+            })
+            rendered.append(self.simulation._policy_renderers[(64, 80)])
         self.assertEqual(len(observation["observation.state"]), 6)
         self.assertEqual(observation["observation.images.front"].shape, (64, 80, 3))
         self.assertEqual(observation["observation.images.front"].dtype.name, "uint8")
+        self.assertIsNotNone(rendered[0].camera)
+        self.assertEqual(tuple(float(value) for value in rendered[0].camera.lookat), (0.0, 0.0, 0.14))
 
     def test_policy_action_is_bounds_checked_then_applied_to_mujoco_only(self):
         frames = []
