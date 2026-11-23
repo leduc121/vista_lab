@@ -35,7 +35,11 @@ complete current matrix and blockers are in
   assumptions in MQTT fakes, and unsupported MuJoCo Intel Mac source builds.
   The lockfile is synchronized without changing existing locked versions;
   Windows MQTT now fails closed pending ACL validation; the native matrix uses
-  Apple Silicon macOS. The corrected matrix is awaiting completion.
+  Apple Silicon macOS. A subsequent matrix confirmed the Python suites but
+  found a slow-start timing assumption in a Node fake-teleoperation test and a
+  required Linux-only esbuild binary on non-Linux runners. The test now uses
+  request/response sequencing, the binary is optional, and macOS ARM64/Windows
+  x64 npm lock dry-runs pass locally. A fresh native matrix is pending.
 
 Backend contracts were read only from the latest available backend sprint source. No backend writes, Production/AWS calls, upload, or physical robot access occurred. **Local release candidate only; live integration and public release are not accepted.** Earlier Queue 1–4 reports are historical; the hashes and results below supersede earlier package hashes.
 

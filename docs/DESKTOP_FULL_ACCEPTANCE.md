@@ -38,9 +38,11 @@
 
 The first packaged runtime probe exposed a missing PyInstaller hidden import for `OpenGL.platform.egl`, which made the packaged simulation unavailable when Electron set `MUJOCO_GL=egl`. `scripts/build-edge-runtime.py` now includes that import. The rebuilt Linux package passed the EGL runtime check.
 
-The first PR CI matrix exposed a test-only global EGL override that failed on headless Linux and non-EGL platforms. The override was removed; camera observation unit coverage now mocks the GL renderer boundary while checking camera configuration and output schema. The full 51-test Edge suite passes locally after this correction; the follow-up CI matrix is pending.
+The first PR CI matrix exposed a test-only global EGL override that failed on headless Linux and non-EGL platforms. The override was removed; camera observation unit coverage now mocks the GL renderer boundary while checking camera configuration and output schema. The full 52-case Edge suite passes locally after this correction (51 passed, one Windows-only test skipped).
 
-The follow-up matrix found that `npm ci` could not use the stale lockfile; it now includes the missing transitive entries without changing versions of existing locked packages. Windows Python mode bits do not represent NTFS DACLs, so the MQTT client now refuses connections on Windows until explicit DACL validation exists. The native CI matrix targets Apple Silicon macOS because the pinned MuJoCo version has no Mac Intel wheel and pip would attempt a source build.
+The follow-up matrix found that `npm ci` could not use the stale lockfile; it now includes the missing transitive entries without changing versions of existing locked packages. Windows Python mode bits do not represent NTFS DACLs, so the MQTT client now refuses connections on Windows until explicit DACL validation exists. The native CI matrix targets Apple Silicon macOS because the pinned MuJoCo version has no Mac Intel wheel and pip would attempt a source build. The Linux-only esbuild binary is now an optional dependency; cross-platform dry runs pass for macOS ARM64 and Windows x64.
+
+The next CI pass confirmed all three Python suites, but found a timing-sensitive Node fake-teleoperation test and the Linux-only esbuild tarball was still a required dependency. The test now sends requests interactively so it timestamps each command at dispatch, and the esbuild package is optional. A fresh native matrix is pending.
 
 ## Remaining issues
 

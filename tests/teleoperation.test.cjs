@@ -2,38 +2,91 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
+const readline = require('node:readline');
 const vm = require('node:vm');
 
-test('Edge JSON-lines fake teleoperation drives only Twin simulation feedback and e-stop blocks follow-up', () => {
+test('Edge JSON-lines fake teleoperation drives only Twin simulation feedback and e-stop blocks follow-up', async () => {
   const root = path.resolve(__dirname, '..');
-  const methods = [
-    { id: 'connect', method: 'teleop_configure', params: { pairId: 'pair-a', leaderPort: 'fake://pair-a/leader', followerPort: 'fake://pair-a/follower', confirmed: true } },
-    { id: 'arm', method: 'teleop_enable', params: { pairId: 'pair-a', confirmed: true } },
-    { id: 'hold', method: 'teleop_deadman', params: { pairId: 'pair-a', held: true, confirmed: true } },
-    { id: 'step', method: 'teleop_step', params: { pairId: 'pair-a', leader: { shoulder_pan: 0, shoulder_lift: 0, elbow_flex: 0, wrist_flex: 0, wrist_roll: 0, gripper: 0 }, sequence: 1, timestamp: Date.now() / 1000, deadmanHeld: true } },
-    { id: 'stop', method: 'teleop_estop', params: { pairId: 'pair-a' } },
-    { id: 'blocked', method: 'teleop_step', params: { pairId: 'pair-a', leader: { shoulder_pan: 0, shoulder_lift: 0, elbow_flex: 0, wrist_flex: 0, wrist_roll: 0, gripper: 0 }, sequence: 2, timestamp: Date.now() / 1000, deadmanHeld: true } },
-    { id: 'shutdown', method: 'stop', params: {} }
-  ];
-  const run = spawnSync(process.env.VISTA_EDGE_PYTHON || 'python3', [path.join(root, 'edge', 'runtime.py')], {
-    cwd: root, input: methods.map((item) => JSON.stringify(item)).join('\n') + '\n',
-    encoding: 'utf8', timeout: 10000, env: { ...process.env, PYTHONPATH: root }
+  const child = spawn(process.env.VISTA_EDGE_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
+    [path.join(root, 'edge', 'runtime.py')], {
+      cwd: root, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONPATH: root }
+    });
+  const exited = once(child, 'exit');
+  const lines = readline.createInterface({ input: child.stdout });
+  let pending = null;
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-5000); });
+  lines.on('line', (line) => {
+    let response;
+    try { response = JSON.parse(line); } catch { return; }
+    if (!pending || response.id !== pending.id) return;
+    clearTimeout(pending.timer);
+    pending.resolve(response);
+    pending = null;
   });
-  assert.equal(run.status, 0, run.stderr);
-  const rows = run.stdout.trim().split('\n').map((line) => JSON.parse(line));
-  assert.equal(rows.length, methods.length);
-  assert.equal(rows[3].result.accepted, true);
-  assert.equal(rows[3].result.frame.source_mode, 'SIMULATION');
-  assert.equal(rows[3].result.frame.robot_id, 'local-so101-pair-a');
-  assert.equal(rows[3].result.frame.measured.length, 6);
-  assert.equal(rows[3].result.status.physicalOutputEnabled, false);
-  assert.equal(rows[4].result.state, 'STOPPED');
-  assert.equal(rows[5].result.accepted, false);
-  assert.equal(rows[5].result.reason, 'estop_latched');
-  assert.equal(rows[6].result.stopping, true);
+  child.on('exit', (code, signal) => {
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pending.reject(new Error(`Edge runtime exited before replying (code=${code}, signal=${signal}): ${stderr}`));
+    pending = null;
+  });
+  const request = (method, params = {}) => new Promise((resolve, reject) => {
+    if (pending) return reject(new Error('Only one Edge JSON-lines request may be outstanding in this test.'));
+    const id = `${method}-${Date.now()}-${Math.random()}`;
+    const timer = setTimeout(() => {
+      pending = null;
+      reject(new Error(`Timed out waiting for Edge method ${method}: ${stderr}`));
+    }, 15000);
+    pending = { id, timer, resolve, reject };
+    child.stdin.write(`${JSON.stringify({ id, method, params })}\n`, (error) => {
+      if (!error || pending?.id !== id) return;
+      clearTimeout(timer);
+      pending = null;
+      reject(error);
+    });
+  });
+  try {
+    const connect = await request('teleop_configure', { pairId: 'pair-a', leaderPort: 'fake://pair-a/leader', followerPort: 'fake://pair-a/follower', confirmed: true });
+    assert.equal(connect.ok, true, connect.error);
+    const arm = await request('teleop_enable', { pairId: 'pair-a', confirmed: true });
+    assert.equal(arm.ok, true, arm.error);
+    const deadman = await request('teleop_deadman', { pairId: 'pair-a', held: true, confirmed: true });
+    assert.equal(deadman.ok, true, deadman.error);
+    const step = await request('teleop_step', {
+      pairId: 'pair-a', leader: { shoulder_pan: 0, shoulder_lift: 0, elbow_flex: 0, wrist_flex: 0, wrist_roll: 0, gripper: 0 },
+      sequence: 1, timestamp: Date.now() / 1000, deadmanHeld: true
+    });
+    assert.equal(step.result.accepted, true);
+    assert.equal(step.result.frame.source_mode, 'SIMULATION');
+    assert.equal(step.result.frame.robot_id, 'local-so101-pair-a');
+    assert.equal(step.result.frame.measured.length, 6);
+    assert.equal(step.result.status.physicalOutputEnabled, false);
+    const stop = await request('teleop_estop', { pairId: 'pair-a' });
+    assert.equal(stop.result.state, 'STOPPED');
+    const blocked = await request('teleop_step', {
+      pairId: 'pair-a', leader: { shoulder_pan: 0, shoulder_lift: 0, elbow_flex: 0, wrist_flex: 0, wrist_roll: 0, gripper: 0 },
+      sequence: 2, timestamp: Date.now() / 1000, deadmanHeld: true
+    });
+    assert.equal(blocked.result.accepted, false);
+    assert.equal(blocked.result.reason, 'estop_latched');
+    const shutdown = await request('stop');
+    assert.equal(shutdown.result.stopping, true);
+    const [code, signal] = await Promise.race([
+      exited,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Edge runtime did not exit after stop.')), 5000))
+    ]);
+    assert.equal(code, 0, `Edge runtime signal=${signal}: ${stderr}`);
+  } finally {
+    lines.close();
+    if (child.exitCode === null) {
+      child.kill('SIGTERM');
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 2000))]);
+    }
+  }
 });
 
 test('physical motion lock has a dedicated state and Electron exposes no physical motion IPC channel', () => {
