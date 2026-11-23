@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { createClient } = require('../api');
 const { isTrustedMainFrame, validateTwinWsUrl, validateEvidenceDownloadUrl } = require('../ipc-security');
 
@@ -184,12 +186,13 @@ test('temporary-password login remains restricted across refresh and changes thr
 });
 
 test('Electron accepts only the trusted main frame and exact packaged page', () => {
-  const frame = { url: 'file:///app/renderer/index.html', isMainFrame: true };
+  const expectedPagePath = path.resolve('app', 'renderer', 'index.html');
+  const frame = { url: pathToFileURL(expectedPagePath).href, isMainFrame: true };
   const window = { webContents: { mainFrame: frame } };
-  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: frame }, window, '/app/renderer/index.html'), true);
-  assert.equal(isTrustedMainFrame({ sender: {}, senderFrame: frame }, window, '/app/renderer/index.html'), false);
-  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: { ...frame, url: 'https://evil.invalid/' } }, window, '/app/renderer/index.html'), false);
-  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: { ...frame, isMainFrame: false } }, window, '/app/renderer/index.html'), false);
+  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: frame }, window, expectedPagePath), true);
+  assert.equal(isTrustedMainFrame({ sender: {}, senderFrame: frame }, window, expectedPagePath), false);
+  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: { ...frame, url: 'https://evil.invalid/' } }, window, expectedPagePath), false);
+  assert.equal(isTrustedMainFrame({ sender: window.webContents, senderFrame: { ...frame, isMainFrame: false } }, window, expectedPagePath), false);
 });
 
 test('Twin endpoint allows secure remote and loopback development URLs only', () => {
