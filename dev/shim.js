@@ -118,7 +118,8 @@
     pair.deadmanHeld = false; pair.state = 'DISCONNECTED'; pair.fault = 'disconnected';
     return teleopStatusRow(pair);
   };
-  let config = { mock: true, rememberedUsername: '', persistentSession: false };
+  let config = { mock: true, fakeRobot: true, hardwareEnabled: false, deviceMappings: {}, rememberedUsername: '', persistentSession: false,
+    iot: { endpoint: 'am09ew70geib4-ats.iot.ap-southeast-1.amazonaws.com', port: 8883, thingName: 'vista-demo-f1c066c4-b5f2-45c4-b933-f034f3824dd9', robotId: 'f1c066c4-b5f2-45c4-b933-f034f3824dd9', topicPrefix: 'vista/demo/robots', enabled: false } };
   let user = { id: 'demo-student', name: 'Nguyễn Minh · Demo', studentCode: 'HS-DEMO', className: '8A2 · Demo', schoolName: 'VISTA Demo' };
 
   const mock = {
@@ -181,12 +182,14 @@
       catch (error) { return { ok: false, error: error.message }; }
     },
     getCfg: async () => ({ ...config }),
-    setCfg: async (value) => { config = { ...config, rememberedUsername: value.rememberedUsername || '' }; return { ...config }; },
+    setCfg: async (value) => { config = { ...config, rememberedUsername: value.rememberedUsername ?? config.rememberedUsername, deviceMappings: value.deviceMappings || config.deviceMappings }; return { ...config }; },
+    iotProvisioningStatus: async () => ({ ...config.iot, certificateReady: false, caFile: null, certificateFile: null, privateKeyReference: null, productionDispatch: false }),
+    selectIotCredential: async () => { throw new Error('Browser preview cannot access certificate files.'); },
     loadDraft: async (id) => drafts.get(id) || null,
     saveDraft: async (id, draft) => { drafts.set(id, draft); return { saved: true }; },
     // This browser-only fixture is deliberately empty and can never report a
     // connected robot or successful calibration.
-    edgeDiagnostics: async () => ({ state: 'ACTION REQUIRED', status: {
+    edgeDiagnostics: async () => ({ state: 'ACTION REQUIRED', runtimeKind: 'MOCK_RUNTIME', status: {
       leader: { connected: false, calibrated: false, calibration: 'ACTION REQUIRED', motionEnabled: false },
       physical: { connected: false, calibrated: false, calibration: 'ACTION REQUIRED', motionEnabled: false }
     } }),

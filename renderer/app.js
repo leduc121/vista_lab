@@ -157,7 +157,7 @@ const call = async (m, ...a) => {
   return r.data;
 };
 
-const clearTimers = () => { timers.forEach(clearInterval); timers = []; if (policyTwinViewer) { policyTwinViewer.dispose(); policyTwinViewer = null; } };
+const clearTimers = () => { timers.forEach((timer) => typeof timer === 'function' ? timer() : clearInterval(timer)); timers = []; if (policyTwinViewer) { policyTwinViewer.dispose(); policyTwinViewer = null; } };
 const every = (fn, ms) => { fn(); timers.push(setInterval(fn, ms)); };
 const initials = (n) => (n || 'HV').split(' ').slice(-2).map((w) => w[0]).join('').toUpperCase();
 const daysLeft = (d) => d ? Math.ceil((new Date(d) - Date.now()) / 864e5) : Infinity;
@@ -433,9 +433,11 @@ function accountCodeView(mode, initialSchool = '', initialStudent = '') {
    ========================================================================== */
 function shell() {
   const items = [
+    ['dashboard', 'Tổng quan trạm'],
     ['labs', 'Lab của tôi'],
     ['workspace', 'Blockly & Simulation'],
     ['twin', 'SO-101 Digital Twin'],
+    ['records', 'Recordings & Evidence'],
     ['history', 'Lịch sử thực nghiệm'],
     ['robot', 'Kết nối & hiệu chuẩn SO-101'],
     ['setup', 'Thiết lập thiết bị'],
@@ -493,9 +495,16 @@ function shell() {
     nav.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.k === k));
     clearTimers();
     every(robot, 10000);
-    if (k === 'labs') {
+    if (k === 'dashboard') {
+      sidebarCoursesEl.hidden = true;
+      dashboardView();
+    } else if (k === 'labs') {
       sidebarCoursesEl.hidden = false;
       labsView();
+    } else if (k === 'twin') {
+      sidebarCoursesEl.hidden = true; twinWorkspaceView();
+    } else if (k === 'records') {
+      sidebarCoursesEl.hidden = true; recordsView();
     } else if (k === 'history') {
       sidebarCoursesEl.hidden = true;
       historyView();
@@ -516,17 +525,84 @@ function shell() {
   go('labs');
 }
 
+async function dashboardView() {
+  if (!sheetEl) return;
+  sheetEl.replaceChildren(h('div', { class: 'sheet-container' },
+    h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'Tổng quan trạm'), h('p', { class: 'view-subline' }, 'Trạng thái được đọc từ runtime cục bộ và phiên Education API hiện tại.'))),
+    h('div', { class: 'loading-bar', role: 'status', 'aria-label': 'Đang kiểm tra trạng thái trạm' })));
+  let cloud = { state: 'UNKNOWN', detail: 'Đang kiểm tra phiên Education API…' };
+  let runtime = null;
+  let runtimeError = '';
+  let localRecordings = [];
+  try { localRecordings = await bridge.recordingList(); } catch { localRecordings = []; }
+  try { await call('me'); cloud = { state: 'SESSION VALID', detail: 'Education API đã xác thực phiên học sinh.' }; }
+  catch (error) { cloud = { state: 'UNVERIFIED', detail: `Không xác minh được phiên Education API: ${error.message}` }; }
+  try { runtime = await bridge.edgeDiagnostics(); }
+  catch (error) { runtimeError = error.message; }
+  if (view !== 'dashboard') return;
+  const edge = runtime?.status || {};
+  const teleop = edge.teleoperation || {};
+  const armStates = edge.arms || { 'leader-a': edge.leader, 'follower-a': edge.physical };
+  const physical = Object.values(armStates).filter((arm) => arm?.connected);
+  const estop = Object.values(teleop).some((pair) => pair?.emergencyStopLatched) ? 'LATCHED' : 'No active simulated E-stop';
+  const runtimeKind = runtime?.runtimeKind === 'MOCK_RUNTIME' ? 'MOCK_RUNTIME'
+    : physical.length ? 'PHYSICAL_ROBOT · READ ONLY'
+      : runtime?.state === 'READY' && !runtimeError ? 'SIMULATION' : 'UNVERIFIED_RUNTIME';
+  const activeRecording = localRecordings.find((episode) => episode.status === 'RECORDING');
+  const latestRecording = localRecordings[0];
+  const recordingState = activeRecording ? ['RECORDING', `Local episode ${activeRecording.episodeId} · ${activeRecording.frames} frames`]
+    : latestRecording ? [latestRecording.status, `Local episode ${latestRecording.episodeId} · ${latestRecording.frames} frames · SHA-256 ${latestRecording.sha256}`]
+      : ['NO LOCAL RECORDING', 'No episode exists in local recording storage.'];
+  const rows = [
+    ['Cloud connection', cloud.state, cloud.detail],
+    ['Local runtime', runtime?.state || 'UNVERIFIED', runtimeError || runtime?.error || `Edge ${runtime?.health?.version || 'version unavailable'}`],
+    ['Runtime kind', runtimeKind, 'Mock data and simulation are never reported as physical motion.'],
+    ['Connected robot arms', `${physical.length} / 4`, physical.length ? physical.map((arm) => `${arm.slot || arm.role}: ${arm.deviceId || 'identity unavailable'}`).join(' · ') : 'No verified physical arm connection. Slots: Leader A, Follower A, Leader B, Follower B.'],
+    ['Calibration', physical.length ? (physical.every((arm) => arm.calibrated) ? 'VERIFIED BY DRIVER' : 'ACTION REQUIRED') : 'NOT VERIFIED', 'Only the connected LeRobot driver can confirm a physical calibration profile.'],
+    ['Teleoperation', Object.values(teleop).some((pair) => pair?.deadmanHeld) ? 'ACTIVE · FAKE SIMULATION' : 'INACTIVE', 'Teleoperation available here uses in-memory fake devices only; physical output is disabled.'],
+    ['Active experiment', activeRecording?.experimentId || 'NONE REPORTED', activeRecording ? `Bound to local recording ${activeRecording.episodeId}.` : 'No active local recording exposes an experiment context.'],
+    ['Recording', recordingState[0], recordingState[1]],
+    ['Emergency stop', estop, 'E-stop state is shown only for the local fake teleoperation pairs; it is not a physical safety circuit.'],
+    ['Hardware output', 'DISABLED', 'hardwareEnabled=false · fakeRobot=true']
+  ];
+  const table = h('div', { class: 'station-status-list', role: 'list' }, ...rows.map(([label, state, detail]) =>
+    h('section', { class: 'station-status-row', role: 'listitem' },
+      h('div', {}, h('h2', {}, label), h('p', {}, detail)),
+      h('span', { class: `station-state ${/VALID|VERIFIED BY DRIVER|ACTIVE · FAKE/.test(state) ? 'is-positive' : /DISABLED|NONE|NOT AVAILABLE|INACTIVE|NOT VERIFIED|ACTION REQUIRED|UNVERIFIED|BLOCKED|LATCHED/.test(state) ? 'is-neutral' : ''}` }, state))));
+  sheetEl.replaceChildren(h('div', { class: 'sheet-container station-dashboard' },
+    h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'Tổng quan trạm'), h('p', { class: 'view-subline' }, 'Kiểm tra trạng thái thực tế trước khi mở một hoạt động lab.')),
+      h('button', { class: 'ghost', onclick: dashboardView }, 'Làm mới')),
+    table,
+    h('p', { class: 'robot-meta' }, `Runtime kind: ${runtimeKind} · physical motion disabled · diagnostics refreshed ${new Date().toLocaleTimeString()}`)));
+}
+
 async function robotStationView() {
+  const armSlots = ['leader-a', 'follower-a', 'leader-b', 'follower-b'];
+  const armRole = (slot) => slot.startsWith('leader-') ? 'leader' : 'follower';
+  const armLabel = (slot) => `${armRole(slot) === 'leader' ? 'Leader' : 'Follower'} ${slot.endsWith('-a') ? 'A' : 'B'}`;
   const roles = {
-    leader: { label: 'Leader', port: '', deviceId: 'lab-so101-leader', status: null, joints: null, error: '' },
-    follower: { label: 'Follower', port: '', deviceId: 'lab-so101-follower', status: null, joints: null, error: '' }
+    'leader-a': { label: 'Leader A', port: '', deviceId: 'lab-so101-leader-a', status: null, joints: null, error: '' },
+    'follower-a': { label: 'Follower A', port: '', deviceId: 'lab-so101-follower-a', status: null, joints: null, error: '' },
+    'leader-b': { label: 'Leader B', port: '', deviceId: 'lab-so101-leader-b', status: null, joints: null, error: '' },
+    'follower-b': { label: 'Follower B', port: '', deviceId: 'lab-so101-follower-b', status: null, joints: null, error: '' }
   };
+  const savedConfig = await bridge.getCfg().catch(() => ({}));
+  for (const slot of armSlots) {
+    const saved = savedConfig.deviceMappings?.[slot];
+    if (saved) {
+      roles[slot].port = saved.port || '';
+      if (saved.deviceId) roles[slot].deviceId = saved.deviceId;
+    }
+  }
+  const persistDeviceMappings = () => bridge.setCfg({
+    deviceMappings: Object.fromEntries(armSlots.map((slot) => [slot, { port: roles[slot].port, deviceId: roles[slot].deviceId }]))
+  }).catch((error) => { notice = `Could not save local arm mapping: ${error.message}`; noticeKind = 'error'; });
   let ports = [];
   let calibration = null;
   let scanned = false;
   let profileChoices = [];
-  let calibrationRole = 'leader';
-  let profileId = 'lab-so101-leader';
+  let calibrationRole = 'leader-a';
+  let profileId = roles[calibrationRole].deviceId;
   let hardwareAuthorized = false;
   let notice = '';
   let noticeKind = 'status';
@@ -669,19 +745,22 @@ async function robotStationView() {
     try { importedPolicies = (await bridge.listPolicies()).items || []; } catch {}
     try {
       const status = await bridge.edgeDiagnostics();
-      roles.follower.status = status.status?.physical || roles.follower.status;
-      roles.leader.status = status.status?.leader || roles.leader.status;
+      for (const slot of armSlots) {
+        roles[slot].status = status.status?.arms?.[slot]
+          || (slot === 'follower-a' ? status.status?.physical : slot === 'leader-a' ? status.status?.leader : null)
+          || roles[slot].status;
+      }
     } catch {}
     try { calibration = await bridge.edgeCalibrationStatus(); } catch (error) { calibration = { status: 'unavailable', error: error.message }; }
     try {
-      const profileResult = await bridge.edgeCalibrationProfiles(calibrationRole);
+      const profileResult = await bridge.edgeCalibrationProfiles(armRole(calibrationRole));
       profileChoices = Array.isArray(profileResult.items) ? profileResult.items : [];
     } catch { profileChoices = []; }
-    for (const role of ['leader', 'follower']) {
+    for (const role of armSlots) {
       const state = roleFromStatus(role);
       if (!state?.connected) { roles[role].joints = null; continue; }
       try {
-        roles[role].joints = await bridge.edgeJointState(role);
+        roles[role].joints = await bridge.edgeJointState(armRole(role), role);
         roles[role].error = '';
       } catch (error) { roles[role].joints = null; roles[role].error = error.message; }
     }
@@ -697,27 +776,28 @@ async function robotStationView() {
     ];
     const rolePanel = (role) => {
       const row = roles[role];
-      const other = roles[role === 'leader' ? 'follower' : 'leader'];
       const connected = Boolean(row.status?.connected);
+      const portConflict = Object.entries(roles).some(([slot, other]) => slot !== role && other.port && other.port === row.port);
       const joints = row.joints?.joints || {};
       const jointNames = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper'];
       return h('section', { class: 'robot-role-panel', 'aria-label': `${row.label} device` },
         h('div', { class: 'robot-role-head' }, h('h2', {}, row.label), h('span', { class: `robot-state ${connected ? 'connected' : ''}`, role: 'status' }, connected ? 'Connected · read only' : 'Disconnected')),
-        h('label', { class: 'robot-field' }, 'Serial port', h('select', { 'aria-label': `${row.label} serial port`, value: row.port, disabled: connected, onchange: (event) => { row.port = event.target.value; render(); } }, ...portOptions(row.port))),
-        h('label', { class: 'robot-field' }, 'LeRobot calibration profile ID', h('input', { value: row.deviceId, maxlength: '64', disabled: connected, 'aria-label': `${row.label} LeRobot profile ID`, oninput: (event) => { row.deviceId = event.target.value; } })),
+        h('label', { class: 'robot-field' }, 'Serial port', h('select', { 'aria-label': `${row.label} serial port`, value: row.port, disabled: connected, onchange: (event) => { row.port = event.target.value; void persistDeviceMappings(); render(); } }, ...portOptions(row.port))),
+        h('label', { class: 'robot-field' }, 'LeRobot calibration profile ID', h('input', { value: row.deviceId, maxlength: '64', disabled: connected, 'aria-label': `${row.label} LeRobot profile ID`, oninput: (event) => { row.deviceId = event.target.value; }, onblur: persistDeviceMappings })),
         h('div', { class: 'robot-actions' },
-          h('button', { class: 'primary', disabled: busy || !row.port || connected || !ports.some((port) => port.path === row.port) || (other.status?.connected && other.status.port === row.port), onclick: async () => {
+          h('button', { class: 'primary', disabled: busy || !row.port || connected || portConflict || !ports.some((port) => port.path === row.port), onclick: async () => {
             busy = true; render();
             try {
               if (!window.confirm(`Connect the ${row.label} using LeRobot for status and calibrated joint readback only? LeRobot may configure communication registers. No motion command is available.`)) return;
-              row.status = await bridge.edgeConnect({ role, port: row.port, deviceId: row.deviceId.trim(), confirmed: true });
+              row.status = await bridge.edgeConnect({ role: armRole(role), slot: role, port: row.port, deviceId: row.deviceId.trim(), confirmed: true });
+              await persistDeviceMappings();
               setNotice(`${row.label} connected. Physical motion remains disabled.`);
             } catch (error) { row.error = error.message; setNotice(`${row.label} connection failed: ${error.message}`, 'error'); }
             finally { busy = false; render(); }
           } }, connected ? 'Connected' : `Connect ${row.label} · read only`),
           h('button', { class: 'ghost', disabled: busy || !connected, onclick: async () => {
             busy = true; render();
-            try { row.status = await bridge.edgeDisconnect(role); row.joints = null; row.error = ''; setNotice(`${row.label} disconnected.`); }
+            try { row.status = await bridge.edgeDisconnect({ slot: role }); row.joints = null; row.error = ''; setNotice(`${row.label} disconnected.`); }
             catch (error) { setNotice(`Disconnect failed: ${error.message}`, 'error'); }
             finally { busy = false; render(); }
           } }, 'Disconnect')),
@@ -736,7 +816,7 @@ async function robotStationView() {
       h('div', { class: 'robot-section-title' }, h('div', {}, h('h2', {}, 'Guided calibration'), h('p', {}, 'LeLab’s verified sequence: neutral homing capture, then manual joint-range recording.')),
         h('span', { class: `robot-state ${calibration?.calibrated ? 'connected' : ''}`, role: 'status' }, calibrationState)),
       h('div', { class: 'robot-calibration-grid' },
-        h('label', { class: 'robot-field' }, 'Device', h('select', { value: calibrationRole, 'aria-label': 'Calibration device role', onchange: (event) => { calibrationRole = event.target.value; profileId = roles[calibrationRole].deviceId; loadState(); } }, h('option', { value: 'leader' }, 'Leader'), h('option', { value: 'follower' }, 'Follower'))),
+        h('label', { class: 'robot-field' }, 'Device', h('select', { value: calibrationRole, 'aria-label': 'Calibration device role', onchange: (event) => { calibrationRole = event.target.value; profileId = roles[calibrationRole].deviceId; loadState(); } }, ...armSlots.map((slot) => h('option', { value: slot }, armLabel(slot))))),
         h('label', { class: 'robot-field' }, 'Serial port', h('select', { value: roles[calibrationRole].port, 'aria-label': 'Calibration serial port', onchange: (event) => { roles[calibrationRole].port = event.target.value; render(); } }, ...portOptions(roles[calibrationRole].port))),
         h('label', { class: 'robot-field' }, 'Saved LeRobot profile', h('select', { value: profileChoices.some((item) => item.id === profileId) ? profileId : '', 'aria-label': 'Saved LeRobot calibration profiles', onchange: (event) => { if (event.target.value) { profileId = event.target.value; roles[calibrationRole].deviceId = profileId; render(); } } }, h('option', { value: '' }, profileChoices.length ? 'Choose a saved profile to reload' : 'No saved profiles found'), ...profileChoices.map((item) => h('option', { value: item.id }, `${item.id} · ${new Date(item.modified * 1000).toLocaleDateString()}`)))),
         h('label', { class: 'robot-field' }, 'Profile ID for save or reload', h('input', { value: profileId, maxlength: '64', 'aria-label': 'Calibration profile ID', oninput: (event) => { profileId = event.target.value; } }))),
@@ -750,7 +830,7 @@ async function robotStationView() {
           busy = true; render();
           try {
             roles[calibrationRole].deviceId = profileId.trim();
-            calibration = await bridge.edgeCalibrationStart({ role: calibrationRole, port: roles[calibrationRole].port, profileId: profileId.trim(), confirmed: true });
+            calibration = await bridge.edgeCalibrationStart({ role: armRole(calibrationRole), slot: calibrationRole, port: roles[calibrationRole].port, profileId: profileId.trim(), confirmed: true });
             setNotice('Calibration started by the local Edge Runtime. Watch the live range table and stop if the setup is unsafe.');
           } catch (error) { setNotice(`Calibration was not started: ${error.message}`, 'error'); }
           finally { busy = false; render(); }
@@ -870,7 +950,7 @@ async function robotStationView() {
       h('div', { class: 'robot-section-title' }, h('div', {}, h('h2', {}, 'Connection'), h('p', {}, 'Scan actual OS serial ports, then assign different explicit ports to the Leader and Follower.')),
         h('button', { class: 'ghost', disabled: busy, onclick: scanPorts }, busy ? 'Working…' : 'Scan serial ports')),
       ports.length ? h('p', { class: 'robot-meta' }, `${ports.length} port(s) discovered by pyserial. “Likely robot” is a USB description heuristic, not device verification.`) : h('p', { class: 'robot-empty' }, scanned ? 'No serial ports are currently available. Connect the arm’s USB adapters and scan again.' : 'No device discovery has been run. Scanning does not fabricate ports or open a serial connection.'),
-      h('div', { class: 'robot-role-grid' }, rolePanel('leader'), rolePanel('follower')),
+      h('div', { class: 'robot-role-grid' }, ...armSlots.map(rolePanel)),
       calControls, policyPanel, fakeTeleop,
       h('button', { class: 'robot-twin-link', onclick: () => document.querySelector('[data-k="twin"]')?.click() }, 'Open the existing authorized SO-101 Digital Twin')));
   };
@@ -977,6 +1057,7 @@ async function settingsView() {
   sheetEl.replaceChildren(h('div', { class: 'sheet-container' }, h('h1', {}, 'Cài đặt'), h('p', { class: 'faint' }, 'Đang đọc cấu hình Desktop…')));
   try {
     const cfg = await bridge.getCfg();
+    let iot = await bridge.iotProvisioningStatus();
     if (view !== 'settings') return;
     const endpoint = h('input', {
       id: 'settings-twin-url', type: 'url', value: cfg.twinWsUrl || '',
@@ -996,6 +1077,38 @@ async function settingsView() {
       finally { save.disabled = false; }
     } }, 'Lưu địa chỉ Twin');
     save.disabled = Boolean(cfg.twinWsManagedByEnvironment);
+    const iotFiles = h('div', { class: 'station-status-list', role: 'list' });
+    const renderIot = () => {
+      const fileRow = (kind, label, filename) => h('section', { class: 'station-status-row', role: 'listitem' },
+        h('div', {}, h('h2', {}, label), h('p', {}, filename || 'Chưa chọn file do chủ dự án cấp.')),
+        h('button', { class: 'ghost', onclick: async () => { try { iot = await bridge.selectIotCredential(kind); renderIot(); updateIotState(); } catch (error) { iotState.textContent = error.message; } } }, filename ? 'Thay file' : 'Chọn file'));
+      iotFiles.replaceChildren(fileRow('ca', 'CA certificate', iot.caFile), fileRow('certificate', 'Device certificate', iot.certificateFile), fileRow('privateKey', 'Private key reference', iot.privateKeyReference));
+    };
+    const iotState = h('p', { class: 'faint', role: 'status', 'aria-live': 'polite' });
+    renderIot();
+    const updateIotState = () => { iotState.textContent = iot.certificateReady
+      ? 'Credential files are present; MQTT remains disabled. The key stays on disk and only its file reference is shown here.'
+      : 'BLOCKED · chưa đủ CA/certificate/private key do chủ dự án cấp. MQTT chưa kết nối.'; };
+    updateIotState();
+    const cloudRows = h('div', { class: 'station-status-list', role: 'list' }, h('p', { class: 'robot-meta' }, 'Đang kiểm tra API và runtime…'));
+    const refreshCloud = async () => {
+      const rows = [];
+      try { const identity = await call('me'); rows.push(['API authentication', 'SESSION VALID', identity.name || identity.fullName || 'Education API xác thực phiên học sinh.']); }
+      catch (error) { rows.push(['API authentication', 'UNVERIFIED', error.message]); }
+      try {
+        const availability = await call('digitalTwinAvailability');
+        const robots = Array.isArray(availability) ? availability : (availability.items || availability.robots || []);
+        const allocated = robots.find((robot) => robot.robotId === iot.robotId || robot.robot_id === iot.robotId);
+        rows.push(['Robot entitlement', allocated?.allocationStatus === 'allocated' && allocated?.viewerAccess === 'authorized' ? 'AVAILABLE' : 'NOT VERIFIED', allocated ? `Robot ${iot.robotId} · ${allocated.allocationStatus || 'allocation unknown'}` : `No authorized allocation reported for ${iot.robotId}.`]);
+      } catch (error) { rows.push(['Robot entitlement', 'UNVERIFIED', error.message]); }
+      try { const diag = await bridge.edgeDiagnostics(); rows.push(['Runtime readiness', diag.state || 'UNVERIFIED', diag.error || `Local Edge ${diag.health?.version || 'unavailable'}`]); }
+      catch (error) { rows.push(['Runtime readiness', 'UNVERIFIED', error.message]); }
+      rows.push(['AWS IoT connection', 'DISABLED', 'VISTA_IOT_ENABLED is not set; production dispatch remains OFF.']);
+      rows.push(['Certificate status', iot.certificateReady ? 'FILES PRESENT · NOT VERIFIED' : 'MISSING', 'File presence does not establish certificate validity or AWS attachment.']);
+      rows.push(['Last heartbeat / command / acknowledgement', 'NOT AVAILABLE', 'No connected device session or MQTT event has been verified.']);
+      cloudRows.replaceChildren(...rows.map(([label, stateText, detail]) => h('section', { class: 'station-status-row', role: 'listitem' }, h('div', {}, h('h2', {}, label), h('p', {}, detail)), h('span', { class: 'station-state is-neutral' }, stateText))));
+    };
+    await refreshCloud();
     sheetEl.replaceChildren(h('div', { class: 'sheet-container' },
       h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'Cài đặt'), h('p', { class: 'view-subline' }, 'Kết nối VISTA và trạng thái lưu phiên trên thiết bị này.'))),
       h('section', { class: 'detail-panel', 'aria-label': 'Education API' },
@@ -1006,6 +1119,16 @@ async function settingsView() {
         h('h2', {}, 'SO-101 Digital Twin'),
         h('label', { for: 'settings-twin-url' }, 'Địa chỉ WebSocket do người vận hành cung cấp'),
         endpoint, save, state),
+      h('section', { class: 'detail-panel', 'aria-label': 'AWS IoT provisioning' },
+        h('h2', {}, 'AWS IoT device provisioning'),
+        h('p', {}, `${iot.endpoint}:${iot.port} · Thing ${iot.thingName}`),
+        h('p', { class: 'faint' }, `Database robot UUID ${iot.robotId} · ${iot.topicPrefix}/{robotId}/[commands|ack|status|telemetry]`),
+        iotFiles, iotState,
+        h('p', { class: 'faint' }, 'Mutual TLS · QoS 1 · production dispatch OFF. Desktop không tạo certificate, không dùng AWS access key, không gửi message thử nghiệm.'),
+        h('p', { class: 'faint' }, 'MQTT chưa được kết nối cho đến khi có certificate và tích hợp runtime qua safety gate được chấp nhận trên môi trường cô lập.')),
+      h('section', { class: 'detail-panel', 'aria-label': 'Cloud connection diagnostics' },
+        h('h2', {}, 'Cloud connection diagnostics'),
+        h('button', { class: 'ghost', onclick: refreshCloud }, 'Làm mới trạng thái'), cloudRows),
       h('section', { class: 'detail-panel', 'aria-label': 'Session storage' },
         h('h2', {}, 'Phiên đăng nhập'),
         h('p', {}, cfg.persistentSession ? 'Lưu phiên được mã hoá bởi hệ điều hành.' : 'Không lưu phiên sau khi đóng ứng dụng: mã hoá hệ điều hành không khả dụng.'),
@@ -1018,24 +1141,37 @@ async function settingsView() {
 }
 
 function renderRobotBannerContent(banner, r) {
-  banner.className = 'robot-status-banner warning simulation-only';
+  const physicalReadOnly = r.online === true;
+  banner.className = `robot-status-banner warning${physicalReadOnly ? '' : ' simulation-only'}`;
   banner.replaceChildren(
     h('div', { class: 'robot-status-banner-left' },
       h('span', { class: 'dot-live warn' }),
       h('div', {},
-        h('span', { class: 'robot-status-banner-title' }, 'SIMULATION · Robot Health panel'),
-        h('span', { class: 'robot-status-banner-desc' }, 'Trạng thái tại đây là minh hoạ. Joint telemetry trực tiếp chỉ hiển thị trong Digital Twin khi attempt được cấp quyền; điều khiển vật lý đang bị khoá.')
+        h('span', { class: 'robot-status-banner-title' }, `${r.mode || 'UNVERIFIED_RUNTIME'} · Robot Health`),
+        h('span', { class: 'robot-status-banner-desc' }, physicalReadOnly
+          ? `Driver reports ${r.calibrated ? 'calibration verified' : 'calibration not verified'}. Physical motion remains disabled.`
+          : 'No physical arm is connected. Simulated values are labelled as simulation; physical motion is disabled.')
       )
     ),
-    h('div', { class: 'num faint', style: 'font-size: 12px;' }, 'Simulated state only')
+    h('div', { class: 'num faint', style: 'font-size: 12px;' }, physicalReadOnly ? 'Read only' : 'No hardware output')
   );
 }
 
 async function robot() {
-  currentRobotHealth = { online: false, ready: false, calibrated: false, estop: 'unknown', mode: 'simulation' };
+  let status = null;
+  let error = '';
+  try { status = await bridge.edgeDiagnostics(); } catch (e) { error = e.message; }
+  const armStates = status?.status?.arms || { 'leader-a': status?.status?.leader, 'follower-a': status?.status?.physical };
+  const connectedArms = Object.values(armStates).filter((arm) => arm?.connected);
+  const runtimeKind = status?.runtimeKind === 'MOCK_RUNTIME' ? 'MOCK_RUNTIME'
+    : connectedArms.length ? 'PHYSICAL · READ ONLY'
+      : status?.state === 'READY' ? 'SIMULATION' : 'UNVERIFIED RUNTIME';
+  currentRobotHealth = { online: connectedArms.length > 0, ready: status?.state === 'READY', calibrated: connectedArms.length > 0 && connectedArms.every((arm) => arm.calibrated), estop: 'unknown', mode: runtimeKind };
   if (robotEl) robotEl.replaceChildren(
-    h('div', { class: 'sidebar-robot-header' }, h('span', { class: 'dot-live' }), 'SIMULATION'),
-    h('div', { class: 'sidebar-robot-detail' }, 'Physical telemetry unavailable · motion disabled')
+    h('div', { class: 'sidebar-robot-header' }, h('span', { class: `dot-live${runtimeKind === 'UNVERIFIED RUNTIME' ? ' warn' : ''}` }), runtimeKind),
+    h('div', { class: 'sidebar-robot-detail' }, error || (currentRobotHealth.online
+      ? `${connectedArms.length} of 4 arm(s) · calibration ${currentRobotHealth.calibrated ? 'driver verified' : 'not verified'} · motion disabled`
+      : status?.state === 'READY' ? 'No physical arm connected · fake teleoperation only' : status?.error || 'Runtime has not been verified'))
   );
   if (robotBannerEl) renderRobotBannerContent(robotBannerEl, currentRobotHealth);
 }
@@ -1432,6 +1568,93 @@ function labRow(l) {
       : false,
     l.teacher_feedback ? h('div', { class: 'lab-grade-note' }, `Phản hồi: ${l.teacher_feedback}`) : false
   );
+}
+
+async function twinWorkspaceView() {
+  const slots = ['leader-a','follower-a','leader-b','follower-b'];
+  const label = (slot) => `${slot.startsWith('leader') ? 'Leader' : 'Follower'} ${slot.endsWith('a') ? 'A' : 'B'}`;
+  let stopped = false; const viewers = new Map(); const last = new Map(); const sequences = new Map();
+  const hosts = new Map();
+  const grid = h('div', { class: 'twin-local-grid' });
+  for (const slot of slots) {
+    const host = h('div', { class: 'twin-local-host' }, h('span', { class: 'faint' }, 'Đang chờ runtime…'));
+    hosts.set(slot, host);
+    grid.append(h('section', { class: 'detail-panel twin-local-panel' },
+      h('header', { class: 'twin-panel-head' }, h('strong', {}, label(slot)), h('span', { class: 'station-state' }, 'CHƯA XÁC MINH')),
+      host,
+      h('div', { class: 'twin-live-values faint' }, 'Joint telemetry chưa có.')));
+  }
+  const status = h('p', { class: 'robot-meta', role: 'status' }, 'Local runtime: đang đọc trạng thái. Pose vật lý chỉ cập nhật khi calibration được runtime xác minh.');
+  const mode = h('select', { 'aria-label': 'Twin layout', onchange: (e) => grid.classList.toggle('twin-single', e.target.value === 'single') }, h('option', { value: 'dual' }, 'Bốn arm slots'), h('option', { value: 'single' }, 'Một arm mỗi hàng'));
+  sheetEl.replaceChildren(h('div', { class: 'sheet-container' },
+    h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'SO-101 Digital Twin'), h('p', { class: 'view-subline' }, 'Joint stream đọc trực tiếp từ Local Robotics Runtime. Mỗi slot giữ một identity riêng; không gộp arm vào Cloud robot.')), mode),
+    h('div', { class: 'detail-panel twin-workspace-toolbar' }, status, h('button', { class: 'ghost', onclick: () => viewers.forEach((v) => v.resetCamera()) }, 'Reset camera')),
+    grid));
+  const refresh = async () => {
+    if (stopped || view !== 'twin') return;
+    try {
+      const diag = await bridge.edgeDiagnostics(); const arms = diag.status?.arms || {};
+      status.textContent = `Runtime ${diag.state || 'UNKNOWN'} · ${diag.health?.version || 'version unknown'} · dữ liệu cục bộ, không gửi Cloud`;
+      for (const slot of slots) {
+        const arm = arms[slot]; const panel = hosts.get(slot).parentElement; const badge = panel.querySelector('.station-state'); const values = panel.querySelector('.twin-live-values');
+        if (!arm?.connected) { badge.textContent = 'DISCONNECTED'; badge.className = 'station-state is-neutral'; continue; }
+        let sample;
+        try { sample = await bridge.edgeJointState(slot.startsWith('leader') ? 'leader' : 'follower', slot); }
+        catch (error) { badge.textContent = 'CONNECTED · TELEMETRY BLOCKED'; badge.className = 'station-state'; values.textContent = error.message; continue; }
+        const unit = sample.unit === 'rad' ? 'rad' : 'deg'; const identity = sample.deviceId || arm.deviceId || slot;
+        const measured = ['shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll','gripper'].map((name) => ({ name, position: sample.joints?.[name], unit }));
+        const frame = parseTwinFrame({ schema_version: 1, robot_id: `local:${identity}`, source_mode: 'LIVE_PHYSICAL', controller_id: identity, measured_at: new Date((sample.timestamp || Date.now()/1000)*1000).toISOString(), sequence: (sequences.get(slot) || 0) + 1, connection: 'connected', measured, calibration_status: arm.calibrated === true ? 'VERIFIED' : 'UNCALIBRATED', ...(arm.calibrated === true ? { calibrated: measured } : {}) });
+        if (!frame) { badge.textContent = 'INVALID TELEMETRY'; badge.className = 'station-state'; continue; }
+        sequences.set(slot, frame.sequence); last.set(slot, Date.now()); badge.textContent = arm.calibrated === true ? 'CONNECTED · CALIBRATION VERIFIED' : 'CONNECTED · UNCALIBRATED · POSE FROZEN'; badge.className = 'station-state';
+        values.textContent = `${identity} · ${new Date(Date.parse(frame.measured_at)).toLocaleTimeString()} · ${measured.map((x) => `${x.name} ${Number(x.position).toFixed(1)}${unit}`).join('  /  ')}`;
+        if (!viewers.has(slot)) {
+          const holder = h('div', { class: 'twin-canvas' }); hosts.get(slot).replaceChildren(holder);
+          try { viewers.set(slot, await mountTwinViewer(holder)); } catch (error) { holder.textContent = `3D viewer unavailable: ${error.message}`; }
+        }
+        viewers.get(slot)?.setFrame(frame);
+      }
+    } catch (error) { status.textContent = `Runtime status unavailable: ${error.message}`; }
+  };
+  const loop = async () => { await refresh(); if (!stopped && view === 'twin') timers.push(setTimeout(loop, 700)); };
+  void loop();
+  timers.push(() => { stopped = true; viewers.forEach((v) => v.dispose()); viewers.clear(); });
+}
+
+async function recordsView() {
+  sheetEl.replaceChildren(h('div', { class: 'sheet-container' }, h('h1', {}, 'Recordings & Evidence'), h('div', { class: 'loading-bar' })));
+  let episodes = [], experiments = [], selectedEpisode = null, frames = [], playing = false, frameIndex = 0, speed = 1, timer = null, replayViewer = null, replayHost = h('div', { class: 'twin-canvas replay-canvas' });
+  try { [episodes, experiments] = await Promise.all([bridge.recordingList(), call('history')]); }
+  catch (error) { episodes = await bridge.recordingList().catch(() => []); }
+  if (view !== 'records') return;
+  const list = h('div', { class: 'recording-list' });
+  const detail = h('div', { class: 'detail-panel recording-detail' }, h('p', { class: 'faint' }, 'Chọn một episode để xem metadata và replay cục bộ.'));
+  const experiment = h('select', { 'aria-label': 'Experiment context' }, h('option', { value: '' }, 'Chọn experiment đã xác thực'), ...experiments.map((x) => h('option', { value: x.id }, `${x.title || x.name || x.id} · ${x.execution_mode || x.method || 'experiment'}`)));
+  const slot = h('select', { 'aria-label': 'Arm slot' }, ...['leader-a','follower-a','leader-b','follower-b'].map((x) => h('option', { value: x }, x)));
+  const refreshList = async () => { episodes = await bridge.recordingList().catch(() => episodes); list.replaceChildren(...episodes.map((ep) => h('button', { class: 'recording-row', onclick: () => openEpisode(ep.episodeId) }, h('strong', {}, ep.episodeId), h('span', {}, `${ep.status} · ${ep.frames} frames · ${ep.declaredRuntimeKind}`), h('small', {}, new Date(ep.startedAtMs).toLocaleString())))); };
+  const openEpisode = async (id) => {
+    try { replayViewer?.dispose(); replayViewer = null; const result = await bridge.recordingGet(id); selectedEpisode = result.manifest; frames = result.frames; frameIndex = 0; replayHost = h('div', { class: 'twin-canvas replay-canvas' }); renderDetail(); replayViewer = await mountTwinViewer(replayHost); renderDetail(); }
+    catch (error) { detail.replaceChildren(h('div', { class: 'err' }, error.message)); }
+  };
+  const renderDetail = () => {
+    if (!selectedEpisode) return;
+    const f = frames[Math.min(frameIndex, Math.max(0, frames.length - 1))];
+    if (f) replayViewer?.setFrame({ ...f, source_mode: 'REPLAY' });
+    detail.replaceChildren(h('div', { class: 'recording-meta' }, h('strong', {}, selectedEpisode.status), h('span', {}, `${selectedEpisode.declaredRuntimeKind} · ${selectedEpisode.slot} · ${selectedEpisode.deviceId}`), h('span', {}, `${selectedEpisode.frames} frames · SHA-256 ${episodes.find((x) => x.episodeId === selectedEpisode.episodeId)?.sha256 || 'computing'}`)),
+      h('div', { class: 'recording-timeline' }, h('input', { type: 'range', min: 0, max: Math.max(0, frames.length - 1), value: frameIndex, oninput: (e) => { frameIndex = Number(e.target.value); renderDetail(); } }), h('span', {}, `${frameIndex + 1} / ${frames.length}`)),
+      h('div', { class: 'recording-controls' }, h('button', { class: 'ghost', onclick: () => { playing = !playing; if (timer) clearInterval(timer); if (playing) timer = setInterval(() => { frameIndex = (frameIndex + 1) % Math.max(1, frames.length); renderDetail(); }, 100 / speed); renderDetail(); } }, playing ? 'Pause' : 'Play'), h('select', { value: String(speed), onchange: (e) => { speed = Number(e.target.value); if (playing) { clearInterval(timer); timer = setInterval(() => { frameIndex = (frameIndex + 1) % Math.max(1, frames.length); renderDetail(); }, 100 / speed); } } }, ...[0.25,0.5,1,2].map((v) => h('option', { value: String(v) }, `${v}×`))), h('span', { class: 'faint' }, 'Visualization replay only · physical replay disabled')),
+      h('div', { class: 'recording-controls' }, h('button', { class: 'ghost', disabled: ['UPLOADING','UPLOADED','PROCESSING','VERIFIED'].includes(selectedEpisode.status) || selectedEpisode.declaredRuntimeKind !== 'PHYSICAL_ROBOT', onclick: async () => { try { status.textContent = 'Uploading authorized trajectory and manifest…'; await bridge.recordingUpload(selectedEpisode.episodeId); status.textContent = 'Upload and manifest POST accepted; processing is pending API evidence confirmation.'; await refreshList(); await openEpisode(selectedEpisode.episodeId); } catch (error) { status.textContent = `Upload failed: ${error.message}`; } } }, selectedEpisode.status === 'PROCESSING' ? 'Processing' : 'Upload evidence'), h('button', { class: 'ghost', onclick: async () => { try { const response = await call('experimentRecordings', selectedEpisode.experimentId); const items = Array.isArray(response) ? response : response.items || []; const match = items.find((item) => item.episodeId === selectedEpisode.episodeId); if (match?.availability === 'available') { selectedEpisode.status = 'VERIFIED'; status.textContent = `Evidence available from Education API · runtimeVerified=${match.runtimeVerified === true}`; await refreshList(); } else status.textContent = match ? `Evidence ${match.availability || 'status pending'}` : 'Upload accepted; the recording processor has not published an evidence row yet.'; } catch (error) { status.textContent = `Evidence status unavailable: ${error.message}`; } } }, 'Check evidence status')),
+      replayHost,
+      h('pre', { class: 'recording-frame' }, f ? JSON.stringify(f.measured, null, 2) : 'No frames'));
+  };
+  const start = h('button', { class: 'primary', onclick: async () => { try { await bridge.recordingStart({ experimentId: experiment.value, slot: slot.value }); start.disabled = true; start.textContent = 'Recording…'; } catch (e) { status.textContent = e.message; } } }, 'Start recording');
+  const stop = h('button', { class: 'ghost', onclick: async () => { try { await bridge.recordingStop(); start.disabled = false; start.textContent = 'Start recording'; status.textContent = 'Episode saved locally with integrity hash.'; await refreshList(); } catch (e) { status.textContent = e.message; } } }, 'Stop & save');
+  const status = h('p', { class: 'robot-meta', role: 'status' }, 'Camera recording unavailable: no supported adapter. Cloud upload requires owner-authorized PHYSICAL_ROBOT experiment and valid API-issued presigned POST.');
+  const unsubscribeProgress = bridge.onRecordingProgress?.(({ percent }) => { if (view === 'records') status.textContent = `Evidence upload: ${percent}%`; });
+  sheetEl.replaceChildren(h('div', { class: 'sheet-container' }, h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'Recordings & Evidence'), h('p', { class: 'view-subline' }, 'Episode trajectory, local replay và upload state được tách rõ.')), h('button', { class: 'ghost', onclick: refreshList }, 'Refresh')),
+    h('section', { class: 'detail-panel recording-start' }, h('label', {}, 'Experiment', experiment), h('label', {}, 'Local arm', slot), start, stop), status,
+    h('div', { class: 'recordings-layout' }, h('section', {}, h('h2', {}, 'Episode library'), list), detail)));
+  await refreshList(); if (episodes.length) openEpisode(episodes[0].episodeId);
+  timers.push(() => { if (timer) clearInterval(timer); playing = false; replayViewer?.dispose(); replayViewer = null; unsubscribeProgress?.(); });
 }
 
 /* ==========================================================================

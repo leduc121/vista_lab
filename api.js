@@ -157,6 +157,9 @@ function realClient(cfg) {
     // Desktop can only list/download evidence through learner-owned routes.
     experimentArtifacts: (experimentId) => get(`/me/experiments/${uuid(experimentId)}/artifacts`),
     experimentArtifactDownload: (experimentId, artifactId) => get(`/me/experiments/${uuid(experimentId)}/artifacts/${uuid(artifactId)}/download`),
+    requestRecordingUpload: (experimentId, manifest) => post(`/me/experiments/${uuid(experimentId)}/recordings/uploads`, manifest),
+    experimentRecordings: (experimentId) => get(`/me/experiments/${uuid(experimentId)}/recordings`),
+    recordingDownload: (experimentId, artifactId) => get(`/me/experiments/${uuid(experimentId)}/recordings/${uuid(artifactId)}/download`),
     programVersions: (programId) => get(`/me/programs/${uuid(programId)}/versions`),
     digitalTwinAvailability: () => get('/robots/digital-twin/availability'),
     issueTwinViewerScope: (attemptId, { robotId, labSessionId } = {}) => post(`/me/attempts/${uuid(attemptId)}/digital-twin/viewer-scope`, { robotId, ...(labSessionId ? { labSessionId } : {}) }),

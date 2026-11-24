@@ -145,6 +145,30 @@ test('experiment evidence listing and download use only the authenticated studen
   assert.throws(() => client.experimentArtifactDownload('not-an-id', artifactId), /không hợp lệ/i);
 });
 
+test('recording upload authorization and retrieval use the deployed student routes', async (t) => {
+  const calls = [];
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url, options) => { calls.push({ url: String(url), options }); return new Response('{}', { status: 200 }); };
+  const client = createClient({ mock: false, educationApi: 'https://api.example.test/api/v1' });
+  client.setSession({ access_token: 'student-token', refresh_token: 'refresh' });
+  const experiment = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const artifact = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const request = { episodeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', files: [] };
+  await client.requestRecordingUpload(experiment, request);
+  await client.experimentRecordings(experiment);
+  await client.recordingDownload(experiment, artifact);
+  assert.deepEqual(calls.map(({ url }) => url), [
+    `https://api.example.test/api/v1/me/experiments/${experiment}/recordings/uploads`,
+    `https://api.example.test/api/v1/me/experiments/${experiment}/recordings`,
+    `https://api.example.test/api/v1/me/experiments/${experiment}/recordings/${artifact}/download`
+  ]);
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.body), request);
+  assert.ok(calls.every(({ options }) => options.headers.Authorization === 'Bearer student-token'));
+  assert.throws(() => client.requestRecordingUpload('invalid', request), /không hợp lệ/i);
+});
+
 test('program update unwraps the Education API RETURNING row for version creation', async (t) => {
   const originalFetch = global.fetch;
   t.after(() => { global.fetch = originalFetch; });
@@ -354,6 +378,11 @@ test('Twin parser requires six measured SO-101 joints and rejects wrong robot fr
   assert.deepEqual(frameJointTargets({ ...frame, connection: 'stale' }, 10000), {});
   assert.deepEqual(frameJointTargets(frame, 15001), {});
   assert.deepEqual(frameJointTargets(null, 10000), {});
+  const live = { ...frame, source_mode: 'LIVE_PHYSICAL', calibration_status: 'UNCALIBRATED' };
+  assert.deepEqual(frameJointTargets(live, 10000), {}, 'uncalibrated physical telemetry must not animate the twin');
+  assert.deepEqual(frameJointTargets({ ...live, calibration_status: 'VERIFIED', calibrated: measured }, 10000), {
+    shoulder_pan: 0, shoulder_lift: 0, elbow_flex: 0, wrist_flex: 0, wrist_roll: 0, gripper: 0
+  });
 });
 
 test('Twin WebSocket client uses the viewer subprotocol, wires frames before open, and bounds a stalled handshake', async () => {

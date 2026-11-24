@@ -1629,6 +1629,15 @@ button.btn-row-action:disabled {
 .setup-card { display:grid; grid-template-columns:minmax(240px, 0.9fr) minmax(0, 1.4fr); align-items:start; gap:24px; padding:16px 0; border-bottom:1px solid var(--rule); }
 .setup-card-title { padding-top:6px; }
 .setup-card h2,.setup-controls h2 { margin:0; font-size:15px; font-weight:500; }
+.station-dashboard { max-width: 1120px; }
+.station-status-list { border-top: 1px solid var(--rule); margin-top: 20px; }
+.station-status-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(190px,auto); align-items:center; gap:20px; padding:14px 4px; border-bottom:1px solid var(--rule); }
+.station-status-row h2 { margin:0 0 4px; font-size:14px; font-weight:550; }
+.station-status-row p { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
+.station-state { justify-self:end; color:var(--text); font:500 11px/1.3 'IBM Plex Mono',monospace; text-align:right; }
+.station-state.is-positive { color:#42bd84; }
+.station-state.is-neutral { color:var(--muted); }
+@media (max-width:700px) { .station-status-row { grid-template-columns:1fr; gap:8px; } .station-state { justify-self:start; text-align:left; } }
 .setup-state-panel { display:flex; align-items:flex-start; gap:12px; padding:12px 14px; border-radius:10px; background:#172021; }
 .setup-state-panel p,.setup-controls p { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
 .setup-badge { flex:none; padding:4px 8px; border:1px solid #775c2e; border-radius:999px; color:#f2d28e; background:#3b2f1a; font:600 10px/1.3 var(--font-sans, sans-serif); letter-spacing:.03em; }
@@ -1726,3 +1735,24 @@ button.btn-row-action:disabled {
   .robot-joints { gap:0 12px; }
   .robot-range-row { grid-template-columns:1fr repeat(3,auto); gap:8px; font-size:11px; }
 }
+
+/* Phase 4 workstation surfaces */
+.twin-local-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.twin-local-grid.twin-single { grid-template-columns:minmax(0,1fr); }
+.twin-local-panel { min-width:0; padding:12px; }
+.twin-panel-head,.twin-workspace-toolbar,.recording-controls,.recording-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.twin-canvas { width:100%; height:260px; overflow:hidden; background:#111718; }
+.twin-canvas canvas { display:block; width:100%; height:100%; }
+.twin-live-values { overflow-wrap:anywhere; font:11px/1.7 var(--font-mono, monospace); }
+.recording-start { display:flex; align-items:end; gap:12px; flex-wrap:wrap; padding:14px; }
+.recording-start label { display:grid; gap:5px; min-width:190px; }
+.recordings-layout { display:grid; grid-template-columns:minmax(240px,.75fr) minmax(0,1.5fr); gap:16px; }
+.recording-list { display:grid; gap:6px; }
+.recording-row { display:grid; gap:4px; text-align:left; padding:10px; border:1px solid var(--line,#d5dcda); background:transparent; color:inherit; cursor:pointer; }
+.recording-row small,.recording-row span { color:var(--muted,#71807c); }
+.recording-detail { padding:16px; min-width:0; }
+.recording-meta { justify-content:flex-start; flex-wrap:wrap; font-size:12px; }
+.recording-timeline { display:flex; align-items:center; gap:12px; margin:18px 0 10px; }
+.recording-timeline input { flex:1; }
+.recording-frame { max-height:240px; overflow:auto; padding:12px; background:rgba(0,0,0,.12); font-size:11px; }
+@media(max-width:1100px) { .twin-local-grid { grid-template-columns:minmax(0,1fr); } .recordings-layout { grid-template-columns:minmax(0,1fr); } }

@@ -2,27 +2,51 @@ const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require('ele
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const https = require('node:https');
+const { Readable } = require('node:stream');
 const { createClient } = require('./api');
 const { secureStorageAvailable: storageAvailable } = require('./session-security');
 const { isTrustedMainFrame, validateTwinWsUrl, validateEvidenceDownloadUrl } = require('./ipc-security');
 const { EdgeRobotRuntime } = require('./robot-runtime');
 const { EdgeSupervisor } = require('./edge-supervisor');
 const { DeviceProvisioning } = require('./device-provisioning');
+const { RecordingManager } = require('./recording-manager');
 
 const defaults = {
   mock: process.env.VISTA_DESKTOP_DEMO === '1',
+  // Physical output is intentionally unavailable in Phase 1. Keep these
+  // explicit in the main process so UI labels cannot enable hardware.
+  fakeRobot: true,
+  hardwareEnabled: false,
   // Operators must choose an environment explicitly. An unset release must
   // never silently connect a student to Production.
   educationApi: process.env.VISTA_EDUCATION_API || '',
   deviceProvisioningEnabled: process.env.VISTA_DEVICE_PROVISIONING_ENABLED === 'true',
+  iot: { endpoint: 'am09ew70geib4-ats.iot.ap-southeast-1.amazonaws.com', port: 8883,
+    thingName: 'vista-demo-f1c066c4-b5f2-45c4-b933-f034f3824dd9', robotId: 'f1c066c4-b5f2-45c4-b933-f034f3824dd9',
+    topicPrefix: 'vista/demo/robots', caPath: '', certificatePath: '', privateKeyPath: '', enabled: false },
   supabaseUrl: process.env.VISTA_SUPABASE_URL || '',
   supabaseAnonKey: process.env.VISTA_SUPABASE_ANON_KEY || '',
   twinWsUrl: '',
+  deviceMappings: {},
   rememberedUsername: ''
 };
 const configPath = () => path.join(app.getPath('userData'), 'config.json');
 const sessionPath = () => path.join(app.getPath('userData'), 'session.enc');
 const draftsDir = () => path.join(app.getPath('userData'), 'drafts');
+const normalizeDeviceMappings = (source) => {
+  const slots = ['leader-a', 'follower-a', 'leader-b', 'follower-b'];
+  const result = {};
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return result;
+  for (const slot of slots) {
+    const item = source[slot];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const port = typeof item.port === 'string' && item.port.length <= 256 ? item.port : '';
+    const deviceId = typeof item.deviceId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(item.deviceId) ? item.deviceId : '';
+    result[slot] = { port, deviceId };
+  }
+  return result;
+};
 const loadConfig = () => {
   let twinWsUrl = '';
   let twinWsConfigurationError = '';
@@ -35,7 +59,9 @@ const loadConfig = () => {
     const saved = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
     let savedTwinWsUrl = '';
     try { savedTwinWsUrl = validateTwinWsUrl(saved.twinWsUrl); } catch {}
-    return { ...defaults, rememberedUsername: typeof saved.rememberedUsername === 'string' ? saved.rememberedUsername.slice(0, 80) : '', twinWsUrl: envUrl ? twinWsUrl : savedTwinWsUrl, twinWsConfigurationError, mujocoModelPath: typeof saved.mujocoModelPath === 'string' ? saved.mujocoModelPath : '', mock: defaults.mock };
+    const iot = { ...defaults.iot, ...(saved.iot && typeof saved.iot === 'object' ? saved.iot : {}) };
+    iot.enabled = false;
+    return { ...defaults, iot, rememberedUsername: typeof saved.rememberedUsername === 'string' ? saved.rememberedUsername.slice(0, 80) : '', deviceMappings: normalizeDeviceMappings(saved.deviceMappings), twinWsUrl: envUrl ? twinWsUrl : savedTwinWsUrl, twinWsConfigurationError, mujocoModelPath: typeof saved.mujocoModelPath === 'string' ? saved.mujocoModelPath : '', mock: defaults.mock };
   } catch { return { ...defaults, twinWsUrl, twinWsConfigurationError }; }
 };
 
@@ -122,13 +148,19 @@ app.whenReady().then(() => {
   client = createClient(config);
   edgeSupervisor = new EdgeSupervisor({ app, logPath: path.join(app.getPath('userData'), 'logs', 'edge-runtime.jsonl'), modelPath: config.mujocoModelPath });
   deviceProvisioning = new DeviceProvisioning({ safeStorage, storageDir: path.join(app.getPath('userData'), 'device-identity') });
+  const recordings = new RecordingManager(path.join(app.getPath('userData'), 'recordings'));
+  let recordingTimer = null;
   // The renderer can still open when a packaged runtime is absent; setup will report BLOCKED.
   edgeSupervisor.start();
 
   registerHandle('cfg:get', () => ({
     mock: config.mock,
+    fakeRobot: true,
+    hardwareEnabled: false,
+    deviceMappings: config.deviceMappings,
     educationApi: config.educationApi,
     deviceProvisioningEnabled: config.deviceProvisioningEnabled,
+    iot: { endpoint: config.iot.endpoint, port: config.iot.port, thingName: config.iot.thingName, robotId: config.iot.robotId, topicPrefix: config.iot.topicPrefix, enabled: false },
     twinWsUrl: config.twinWsUrl,
     twinWsConfigurationError: config.twinWsConfigurationError,
     twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL),
@@ -158,14 +190,84 @@ app.whenReady().then(() => {
     for (const pairId of ['pair-a', 'pair-b']) void edgeSupervisor.request('teleop_disconnect', { pairId }).catch(() => {});
   };
   registerHandle('edge:diagnostics', async () => { requireLocalSession(); return edgeSupervisor.diagnostics(); });
+  registerHandle('recording:list', () => { requireLocalSession(); return recordings.list(); });
+  registerHandle('recording:get', (episodeId) => { requireLocalSession(); return recordings.get(episodeId); });
+  registerHandle('recording:start', async ({ experimentId, slot } = {}) => {
+    requireLocalSession();
+    if (!['leader-a','follower-a','leader-b','follower-b'].includes(slot)) throw new Error('Select a connected SO-101 arm.');
+    if (!/^[0-9a-f-]{36}$/i.test(String(experimentId || ''))) throw new Error('Select a valid experiment.');
+    const experiment = await client.experimentStatus(experimentId);
+    const robotId = experiment?.robot_id || experiment?.robotId;
+    if (!robotId) throw new Error('Experiment has no robot identity; recording cannot be scoped safely.');
+    const diag = await edgeSupervisor.diagnostics(); const arm = diag.status?.arms?.[slot];
+    if (!arm?.connected || !arm.deviceId) throw new Error('Selected arm is not connected with a verified device identity.');
+    if (recordings.active) throw new Error('Another episode is recording.');
+    const result = recordings.start({ experimentId, robotId, slot, deviceId: arm.deviceId, calibrated: arm.calibrated === true, runtimeKind: /PHYSICAL/i.test(arm.mode || '') ? 'PHYSICAL_ROBOT' : /MOCK/i.test(arm.mode || '') ? 'MOCK_RUNTIME' : /SIMULATION/i.test(arm.mode || '') ? 'SIMULATION' : 'UNVERIFIED_RUNTIME' });
+    const sampleOnce = async () => {
+      if (!recordings.active) { recordingTimer = null; return; }
+      try { const role = slot.startsWith('leader-') ? 'leader' : 'follower'; recordings.append(await edgeSupervisor.request('joint_state', { role, slot }, 3000)); }
+      catch { recordings.stop('INTERRUPTED'); recordingTimer = null; return; }
+      if (recordings.active) recordingTimer = setTimeout(sampleOnce, 50); else recordingTimer = null;
+    };
+    recordingTimer = setTimeout(sampleOnce, 0);
+    return result;
+  });
+  registerHandle('recording:stop', () => { if (recordingTimer) clearTimeout(recordingTimer); recordingTimer = null; return recordings.stop(); });
+  const postPresigned = (target, fields, filename, fileSize, contentType, onProgress) => new Promise((resolve, reject) => {
+    const url = new URL(target); if (url.protocol !== 'https:') return reject(new Error('Presigned upload must use HTTPS.'));
+    const boundary = `----VISTA${crypto.randomBytes(18).toString('hex')}`;
+    const chunks = []; for (const [key, value] of Object.entries(fields || {})) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${String(value)}\r\n`));
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${path.basename(filename)}"\r\nContent-Type: ${contentType}\r\n\r\n`));
+    const end = Buffer.from(`\r\n--${boundary}--\r\n`); const total = chunks.reduce((n, b) => n + b.length, 0) + fileSize + end.length;
+    const req = https.request(url, { method: 'POST', headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': total } }, (res) => { res.resume(); res.on('end', () => res.statusCode >= 200 && res.statusCode < 300 ? resolve() : reject(new Error(`Presigned upload returned HTTP ${res.statusCode}.`))); });
+    req.on('error', reject); let sent = 0; const write = (buf) => { sent += buf.length; req.write(buf); onProgress?.(Math.min(99, Math.floor(sent * 100 / total))); };
+    (async () => { try { for (const chunk of chunks) write(chunk); for await (const chunk of fs.createReadStream(filename)) write(chunk); write(end); req.end(); } catch (e) { req.destroy(e); } })();
+  });
+  registerHandle('recording:upload', async (episodeId) => {
+    requireLocalSession(); if (config.mock) throw new Error('Evidence upload is disabled for Demo sessions.');
+    const local = recordings.get(episodeId); const m = local.manifest;
+    if (!m.endedAtMs || !['LOCAL_RECORDED','FAILED','INTERRUPTED'].includes(m.status)) throw new Error('Only a stopped local episode can be uploaded.');
+    if (m.declaredRuntimeKind !== 'PHYSICAL_ROBOT') throw new Error('The recording upload contract accepts only owner-authorized real_robot experiments.');
+    const dir = recordings.directory(episodeId); const artifactPath = path.join(dir, 'trajectory.ndjson'); const fileSize = fs.statSync(artifactPath).size;
+    if (fileSize < 1 || fileSize > 256 * 1024 * 1024) throw new Error('Recording exceeds the per-file upload limit.');
+    const digest = crypto.createHash('sha256'); for await (const chunk of fs.createReadStream(artifactPath)) digest.update(chunk);
+    const file = { name: 'trajectory.ndjson', sizeBytes: fileSize, sha256: digest.digest('hex'), contentType: 'application/x-ndjson', artifactType: 'trajectory' };
+    const auth = await client.requestRecordingUpload(m.experimentId, { episodeId: m.episodeId, files: [file] });
+    if (auth.episodeId !== m.episodeId || auth.robotId !== m.robotId || auth.schema !== 'vista.robot.recording.v1' || !Array.isArray(auth.uploads) || !auth.manifest || auth.manifest.uploadLast !== true) throw new Error('Education API returned an upload scope that does not match this episode.');
+    recordings.updateStatus(episodeId, 'UPLOADING');
+    const report = (percent) => { if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('recording:progress', { episodeId, percent }); };
+    try {
+      for (const upload of auth.uploads) { if (upload.name !== file.name || !upload.url || !upload.key) throw new Error('Upload authorization did not match the episode artifact.'); await postPresigned(upload.url, upload.fields, artifactPath, fileSize, file.contentType, report); }
+      const manifest = { schema: auth.schema, episodeId: m.episodeId, robotId: m.robotId, experimentId: m.experimentId, startedAtMs: m.startedAtMs, endedAtMs: m.endedAtMs, declaredRuntimeKind: m.declaredRuntimeKind, files: [file] };
+      const manifestAuth = auth.manifest; if (!manifestAuth.url || !manifestAuth.fields) throw new Error('Manifest upload authorization is incomplete.');
+      const manifestPath = path.join(dir, 'manifest.upload.json'); fs.writeFileSync(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
+      const manifestBytes = fs.readFileSync(manifestPath); await postPresigned(manifestAuth.url, manifestAuth.fields, manifestPath, manifestBytes.length, 'application/json', report);
+      recordings.updateStatus(episodeId, 'UPLOADED'); report(100); return { status: 'UPLOADED' };
+    } catch (error) { recordings.updateStatus(episodeId, 'FAILED', { uploadError: String(error.message).slice(0, 300) }); throw error; }
+  });
   registerHandle('edge:ports', async () => { requireLocalSession(); return edgeSupervisor.request('ports'); });
   registerHandle('edge:connect', async (selection = {}) => {
     requireLocalSession();
     if (!selection || typeof selection.port !== 'string' || typeof selection.deviceId !== 'string') throw new Error('Choose a discovered serial port and robot ID.');
-    return edgeSupervisor.request('connect', { ...selection, role: selection.role || 'follower', mode: 'PHYSICAL ROBOT READ ONLY', confirmed: selection.confirmed === true }, 15000);
+    const roles = { 'leader-a': 'leader', 'follower-a': 'follower', 'leader-b': 'leader', 'follower-b': 'follower' };
+    const slot = selection.slot || (selection.role === 'leader' ? 'leader-a' : 'follower-a');
+    if (!roles[slot] || (selection.role && roles[slot] !== selection.role)) throw new Error('Select a valid SO-101 role slot.');
+    return edgeSupervisor.request('connect', { ...selection, slot, role: roles[slot], mode: 'PHYSICAL ROBOT READ ONLY', confirmed: selection.confirmed === true }, 15000);
   });
-  registerHandle('edge:disconnect', async (role) => { requireLocalSession(); return edgeSupervisor.request('disconnect', role ? { role } : {}); });
-  registerHandle('edge:joint-state', async (role = 'follower') => { requireLocalSession(); return edgeSupervisor.request('joint_state', { role }); });
+  registerHandle('edge:disconnect', async (selection) => {
+    requireLocalSession();
+    if (typeof selection === 'string') selection = { role: selection };
+    if (selection && typeof selection !== 'object') throw new Error('Select one arm slot to disconnect.');
+    const slots = ['leader-a', 'follower-a', 'leader-b', 'follower-b'];
+    if (selection?.slot && !slots.includes(selection.slot)) throw new Error('Select one of the four SO-101 arm slots.');
+    return edgeSupervisor.request('disconnect', selection?.slot ? { slot: selection.slot } : selection?.role ? { role: selection.role } : {});
+  });
+  registerHandle('edge:joint-state', async (role = 'follower', slot) => {
+    requireLocalSession();
+    if (!['leader', 'follower'].includes(role)) throw new Error('Select Leader or Follower explicitly.');
+    if (slot !== undefined && !['leader-a', 'follower-a', 'leader-b', 'follower-b'].includes(slot)) throw new Error('Select a valid SO-101 arm slot.');
+    return edgeSupervisor.request('joint_state', { role, ...(slot ? { slot } : {}) });
+  });
   registerHandle('edge:calibration-status', async () => { requireLocalSession(); return edgeSupervisor.request('calibration_status'); });
   registerHandle('edge:calibration-profiles', async (role) => {
     requireLocalSession();
@@ -175,8 +277,10 @@ app.whenReady().then(() => {
   registerHandle('edge:calibration-start', async (params = {}) => {
     requireLocalSession();
     if (!params || typeof params !== 'object') throw new Error('Calibration selection is invalid.');
+    const expectedRole = params.slot?.startsWith?.('leader-') ? 'leader' : params.slot?.startsWith?.('follower-') ? 'follower' : params.role;
+    if (params.slot && (!['leader-a', 'follower-a', 'leader-b', 'follower-b'].includes(params.slot) || params.role !== expectedRole)) throw new Error('Calibration role does not match the selected arm slot.');
     return edgeSupervisor.request('calibration_start', {
-      role: params.role, port: params.port, profileId: params.profileId,
+      role: params.role, slot: params.slot, port: params.port, profileId: params.profileId,
       confirmed: params.confirmed === true
     }, 5000);
   });
@@ -241,7 +345,7 @@ app.whenReady().then(() => {
     const simulation = await edgeSupervisor.request('load_model', { path: selected }, 30000);
     config.mujocoModelPath = selected;
     fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, twinWsUrl: config.twinWsUrl, mujocoModelPath: selected }), { mode: 0o600 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, deviceMappings: config.deviceMappings, twinWsUrl: config.twinWsUrl, mujocoModelPath: selected }), { mode: 0o600 });
     fs.chmodSync(configPath(), 0o600);
     return simulation;
   });
@@ -258,6 +362,32 @@ app.whenReady().then(() => {
     return edgeSupervisor.request('resume_simulation');
   });
   registerHandle('provisioning:status', () => deviceProvisioning.status());
+  const iotProvisioningStatus = () => ({
+    endpoint: config.iot.endpoint, port: config.iot.port, thingName: config.iot.thingName,
+    robotId: config.iot.robotId, topicPrefix: config.iot.topicPrefix, enabled: false,
+    certificateReady: Boolean(config.iot.caPath && config.iot.certificatePath && config.iot.privateKeyPath
+      && [config.iot.caPath, config.iot.certificatePath, config.iot.privateKeyPath].every((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } })
+      && process.platform !== 'win32' && (() => { try { return (fs.statSync(config.iot.privateKeyPath).mode & 0o077) === 0; } catch { return false; } })()),
+    caFile: config.iot.caPath ? path.basename(config.iot.caPath) : null,
+    certificateFile: config.iot.certificatePath ? path.basename(config.iot.certificatePath) : null,
+    privateKeyReference: config.iot.privateKeyPath ? path.basename(config.iot.privateKeyPath) : null,
+    productionDispatch: false
+  });
+  registerHandle('iot:status', iotProvisioningStatus);
+  registerHandle('iot:select-file', async (kind) => {
+    const key = { ca: 'caPath', certificate: 'certificatePath', privateKey: 'privateKeyPath' }[kind];
+    if (!key) throw new Error('Select a supported certificate file role.');
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], title: 'Select externally provisioned AWS IoT credential' });
+    if (result.canceled || !result.filePaths?.[0]) return iotProvisioningStatus();
+    const selected = result.filePaths[0];
+    if (!fs.statSync(selected).isFile() || fs.statSync(selected).size > 1024 * 1024) throw new Error('Credential file is invalid or exceeds 1 MB.');
+    if (kind === 'privateKey' && (process.platform === 'win32' || (fs.statSync(selected).mode & 0o077))) throw new Error('Private key file must have owner-only permissions (0600); Windows ACL validation is not available.');
+    config.iot[key] = selected;
+    fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, deviceMappings: config.deviceMappings, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '', iot: config.iot }), { mode: 0o600 });
+    fs.chmodSync(configPath(), 0o600);
+    return iotProvisioningStatus();
+  });
   registerHandle('provisioning:create-key', () => { requireLocalSession(); return deviceProvisioning.createEnrollmentKey(); });
   registerHandle('provisioning:enroll', async (enrollmentCode) => { requireLocalSession(); if (!config.deviceProvisioningEnabled) throw new Error('Device provisioning is disabled by operator policy.'); return deviceProvisioning.enroll(enrollmentCode); });
   registerHandle('provisioning:refresh', async () => { requireLocalSession(); if (!config.deviceProvisioningEnabled) throw new Error('Device provisioning is disabled by operator policy.'); return deviceProvisioning.authenticate(); });
@@ -283,15 +413,16 @@ app.whenReady().then(() => {
     const activeSession = client.getSession?.();
     const next = { ...config };
     if (typeof patch.rememberedUsername === 'string') next.rememberedUsername = patch.rememberedUsername.slice(0, 80);
+    if (patch.deviceMappings !== undefined) next.deviceMappings = normalizeDeviceMappings(patch.deviceMappings);
     if (typeof patch.twinWsUrl === 'string' && process.env.VISTA_TWIN_WS_URL) throw new Error('Twin endpoint is managed by VISTA_TWIN_WS_URL in the operator environment.');
     if (typeof patch.twinWsUrl === 'string') next.twinWsUrl = patch.twinWsUrl.trim() ? validateTwinWsUrl(patch.twinWsUrl) : '';
     config = next;
     fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '' }), { mode: 0o600 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, deviceMappings: config.deviceMappings, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '', iot: config.iot }), { mode: 0o600 });
     fs.chmodSync(configPath(), 0o600);
     client = createClient(config);
     if (activeSession) client.setSession(activeSession);
-    return { mock: config.mock, educationApi: config.educationApi, twinWsUrl: config.twinWsUrl, twinWsConfigurationError: config.twinWsConfigurationError, twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL), rememberedUsername: config.rememberedUsername, persistentSession: secureStorageAvailable() };
+    return { mock: config.mock, fakeRobot: true, hardwareEnabled: false, deviceMappings: config.deviceMappings, educationApi: config.educationApi, twinWsUrl: config.twinWsUrl, twinWsConfigurationError: config.twinWsConfigurationError, twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL), rememberedUsername: config.rememberedUsername, persistentSession: secureStorageAvailable() };
   });
 
   registerHandle('session:restore', async () => {
@@ -320,7 +451,7 @@ app.whenReady().then(() => {
       'createProgramVersion', 'submitAttempt', 'createSchematicExperiment', 'runSchematic',
       'experimentStatus', 'experimentEvents', 'experimentResult', 'physicalEligibility',
       'activePhysicalExecution', 'physicalStatus', 'programVersions',
-      'digitalTwinAvailability', 'issueTwinViewerScope'
+      'digitalTwinAvailability', 'issueTwinViewerScope', 'requestRecordingUpload', 'experimentRecordings', 'recordingDownload'
     ]);
     if (!allowed.has(method) || typeof client[method] !== 'function') return { ok: false, error: 'Method not allowed' };
     try {

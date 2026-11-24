@@ -17,9 +17,7 @@ test('Electron supervisor exchanges health/status with local Python process and 
     assert.equal(result.health.mode, 'SIMULATION');
     assert.equal(result.health.version, '0.1.0');
     assert.equal(result.status.motionEnabled, false);
-    const state = await supervisor.request('joint_state');
-    assert.equal(state.mode, 'SIMULATION');
-    assert.equal(state.measured, false);
+    await assert.rejects(supervisor.request('joint_state'), /physical SO-101 arm is disconnected/i);
   } finally {
     await supervisor.stop();
     fs.rmSync(temp, { recursive: true, force: true });

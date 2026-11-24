@@ -25,6 +25,7 @@ _PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _MAX_POSITION = 5000
 _MAX_JUMP = 2000
 _MIN_RANGE = 100
+_SO101_MOTORS = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
 
 
 class CalibrationWorkflow:
@@ -46,7 +47,7 @@ class CalibrationWorkflow:
 
     @staticmethod
     def _idle() -> dict[str, Any]:
-        return {"active": False, "status": "idle", "role": None, "port": None,
+        return {"active": False, "status": "idle", "deviceState": "DISCONNECTED", "role": None, "slot": None, "port": None,
                 "profileId": None, "message": "", "error": None, "step": 0,
                 "totalSteps": 2, "positions": None, "ranges": None,
                 "calibrated": False, "warnings": [], "motionEnabled": False}
@@ -91,11 +92,14 @@ class CalibrationWorkflow:
             return {"role": role, "items": [], "available": False}
         return {"role": role, "items": profiles, "available": True}
 
-    def start(self, role: str, port: str, profile_id: str, confirmed: bool) -> dict[str, Any]:
+    def start(self, role: str, port: str, profile_id: str, confirmed: bool, slot: str | None = None) -> dict[str, Any]:
         if not confirmed:
             raise PermissionError("Explicit operator confirmation is required before hardware calibration.")
         if role not in {"leader", "follower"}:
             raise ValueError("Select leader or follower explicitly.")
+        if slot is not None and (slot not in {"leader-a", "follower-a", "leader-b", "follower-b"}
+                                 or (slot.startswith("leader-") != (role == "leader"))):
+            raise ValueError("Calibration slot does not match the selected LeRobot role.")
         if not isinstance(profile_id, str) or not _PROFILE_ID.fullmatch(profile_id):
             raise ValueError("Calibration profile ID must be 1–64 letters, digits, dots, dashes, or underscores.")
         if port not in {row.get("path") for row in self.port_provider()}:
@@ -106,7 +110,8 @@ class CalibrationWorkflow:
             self._stop.clear()
             self._complete_step.clear()
             self._status = {**self._idle(), "active": True, "status": "connecting",
-                            "role": role, "port": port, "profileId": profile_id,
+                            "deviceState": "CALIBRATING",
+                            "role": role, "slot": slot or role, "port": port, "profileId": profile_id,
                             "message": "Opening the selected LeRobot device.", "step": 0}
             self._thread = threading.Thread(target=self._run, args=(role, port, profile_id),
                                             name="vista-so101-calibration", daemon=True)
@@ -134,6 +139,15 @@ class CalibrationWorkflow:
     def _set(self, **values: Any) -> None:
         with self._lock:
             self._status.update(values)
+            status = self._status.get("status")
+            if status in {"connecting", "recording", "stopping"}:
+                self._status["deviceState"] = "CALIBRATING"
+            elif status == "completed" and self._status.get("calibrated"):
+                self._status["deviceState"] = "CALIBRATED"
+            elif status == "error":
+                self._status["deviceState"] = "ERROR"
+            else:
+                self._status["deviceState"] = "DISCONNECTED"
 
     def _run(self, role: str, port: str, profile_id: str) -> None:
         device = None
@@ -173,8 +187,12 @@ class CalibrationWorkflow:
                 time.sleep(0.1)
             if not start:
                 raise RuntimeError("Could not read valid initial encoder positions after multiple attempts.")
+            if set(start) != _SO101_MOTORS or set(device.bus.motors) != _SO101_MOTORS:
+                raise RuntimeError("Connected motor names do not match the six-joint SO-101 calibration schema.")
             previous = dict(start)
             offsets = device.bus._get_half_turn_homings(start)
+            if set(offsets) != _SO101_MOTORS:
+                raise RuntimeError("LeRobot homing offsets do not cover all six named SO-101 motors.")
             for motor, offset in offsets.items():
                 device.bus.write("Homing_Offset", motor, offset)
             mins, maxes = dict(start), dict(start)
@@ -200,6 +218,8 @@ class CalibrationWorkflow:
                 if positions is None:
                     time.sleep(0.2)
                     continue
+                if set(positions) != _SO101_MOTORS:
+                    raise RuntimeError("Calibration telemetry is missing or contains an unexpected SO-101 motor.")
                 for motor, raw in positions.items():
                     value = int(raw)
                     if not (0 < value < _MAX_POSITION):
@@ -223,6 +243,7 @@ class CalibrationWorkflow:
             warnings = [f"{name}: recorded range is under {_MIN_RANGE} encoder counts" for name in insufficient]
             if warnings:
                 self._set(warnings=warnings)
+                raise RuntimeError("Calibration range is insufficient; profile was not saved: " + ", ".join(insufficient))
             make_calibration = self.motor_calibration_factory
             if make_calibration is None:
                 from lerobot.motors import MotorCalibration

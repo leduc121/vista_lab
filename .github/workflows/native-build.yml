@@ -9,6 +9,7 @@ on:
       - 'renderer/assets/so101/**'
       - 'main.js'
       - 'preload.js'
+      - 'recording-manager.js'
       - 'edge-supervisor.js'
       - 'device-provisioning.js'
       - 'renderer/app.js'
@@ -27,9 +28,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: --linux AppImage deb
+            target: --linux AppImage deb --x64
           - os: windows-latest
-            target: --win nsis
+            target: --win nsis --x64
           - os: macos-15
             target: --mac dmg --arm64
     runs-on: ${{ matrix.os }}
@@ -49,9 +50,10 @@ jobs:
         shell: bash
       - run: npm run build:renderer
       - run: npx electron-builder ${{ matrix.target }}
+      - run: npm run release:checksums
       - uses: actions/upload-artifact@v4
         with:
           name: vista-lab-station-${{ matrix.os }}
-          path: dist/*
+          path: dist/phase6-candidate/**
           if-no-files-found: error
 

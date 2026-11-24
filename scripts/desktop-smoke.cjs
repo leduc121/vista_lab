@@ -90,10 +90,15 @@ async function main() {
   console.log('UI smoke: labs loaded');
   await page.waitForSelector('.robot-status-banner');
   const banner = await page.$eval('.robot-status-banner', (el) => el.textContent);
-  if (!banner.includes('SIMULATION') || !banner.includes('đang bị khoá')) throw new Error(`Expected honest simulation banner; got: ${banner}`);
+  if (!/SIMULATION|MOCK_RUNTIME|UNVERIFIED[ _]RUNTIME|PHYSICAL · READ ONLY/.test(banner) || !banner.toLowerCase().includes('physical motion is disabled')) throw new Error(`Expected an honest runtime banner; got: ${banner}`);
   await page.screenshot({ path: path.join(out, 'student-dashboard.png'), fullPage: true });
-
+  await page.click('button[data-k="dashboard"]');
+  await page.waitForSelector('.station-status-list');
+  await page.waitForFunction(() => document.querySelector('.station-status-list')?.textContent.includes('hardwareEnabled=false'));
+  await page.screenshot({ path: path.join(out, 'station-dashboard.png'), fullPage: true });
+  await page.click('button[data-k="labs"]');
   await page.waitForSelector('.lab-table-row .btn-row-action');
+
   await page.$eval('.lab-table-row .btn-row-action', (button) => button.click());
   await page.evaluate(() => [...document.querySelectorAll('button')].find((button) => button.textContent.includes('Kiểm tra lại'))?.click());
   await page.waitForSelector('.preflight-item');
@@ -188,7 +193,7 @@ async function main() {
     deadmanDisabled: station.querySelector('[aria-label="Fake-device Leader Follower teleoperation"] [data-deadman]')?.disabled,
     estopDisabled: [...station.querySelectorAll('[aria-label="Fake-device Leader Follower teleoperation"] button')].find((button) => button.textContent.includes('Emergency stop'))?.disabled
   }));
-  if (robotAcceptance.rolePanels.length !== 2 || robotAcceptance.rolePanels.some((role, index) => role.label !== ['Leader device', 'Follower device'][index] || !role.portSelector || !role.connectionState || role.jointRows !== 6)) {
+  if (robotAcceptance.rolePanels.length !== 4 || robotAcceptance.rolePanels.some((role, index) => role.label !== ['Leader A device', 'Follower A device', 'Leader B device', 'Follower B device'][index] || !role.portSelector || !role.connectionState || role.jointRows !== 6)) {
     throw new Error(`Robot Station role selection/status/joint feedback is incomplete: ${JSON.stringify(robotAcceptance.rolePanels)}`);
   }
   if (!robotAcceptance.calibration.includes('neutral homing capture') || !robotAcceptance.calibration.includes('manual joint-range recording')) throw new Error('Guided calibration procedure is missing or incomplete.');

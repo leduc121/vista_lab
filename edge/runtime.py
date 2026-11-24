@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
 import os
@@ -31,6 +32,22 @@ except ModuleNotFoundError:
 RUNTIME_VERSION = "0.1.0"
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
 logger = logging.getLogger("vista.edge")
+
+
+def normalize_joint_positions(values: Any) -> dict[str, float]:
+    """Normalize LeRobot's named SO-101 readings without relying on dict order."""
+    if not isinstance(values, dict):
+        raise ValueError("LeRobot joint state must be a named mapping.")
+    result: dict[str, float] = {}
+    for name in JOINTS:
+        key = name if name in values else f"{name}.pos"
+        if key not in values:
+            raise ValueError(f"LeRobot joint state is missing {name}.")
+        raw = values[key]
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            raise ValueError(f"LeRobot joint {name} must be finite numeric data.")
+        result[name] = float(raw)
+    return result
 
 
 class Adapter(Protocol):
@@ -73,15 +90,17 @@ class LeRobotSO101Adapter:
 
     mode = "PHYSICAL ROBOT READ ONLY"
 
-    def __init__(self, role: str = "follower") -> None:
+    def __init__(self, role: str = "follower", slot: str | None = None) -> None:
         if role not in {"leader", "follower"}:
             raise ValueError("SO-101 role must be leader or follower.")
         self.role = role
+        self.slot = slot or role
         self.robot = None
         self.port: str | None = None
         self.device_id: str | None = None
         self.calibration_ready = False
         self._serial_owner: SerialPortOwner | None = None
+        self.last_error: str | None = None
 
     @staticmethod
     def ports() -> list[dict[str, Any]]:
@@ -105,15 +124,25 @@ class LeRobotSO101Adapter:
         return results
 
     def status(self) -> dict[str, Any]:
+        try:
+            connected = bool(self.robot and self.robot.is_connected)
+        except Exception:
+            connected = False
         return {
             "mode": self.mode,
-            "connected": bool(self.robot and self.robot.is_connected),
+            "connected": connected,
+            "state": "ERROR" if self.last_error else "CALIBRATED" if connected and self.calibration_ready else "UNCALIBRATED" if connected else "DISCONNECTED",
             "calibrated": self.calibration_ready,
             "calibration": "READY" if self.calibration_ready else "ACTION REQUIRED",
             "motionEnabled": False,
             "port": self.port,
             "deviceId": self.device_id,
             "role": self.role,
+            "slot": self.slot,
+            "identity": self.device_id,
+            "firmware": None,
+            "firmwareCompatibility": "UNVERIFIED",
+            "error": self.last_error,
         }
 
     def connect(self, port: str, device_id: str) -> dict[str, Any]:
@@ -126,12 +155,18 @@ class LeRobotSO101Adapter:
             raise ValueError("Robot ID must contain 1 to 64 printable characters.")
         if importlib.util.find_spec("lerobot") is None:
             raise RuntimeError("LeRobot is unavailable in this Edge Runtime.")
+        try:
+            installed_lerobot = package_version("lerobot")
+        except PackageNotFoundError as error:
+            raise RuntimeError("LeRobot package metadata is unavailable; hardware connection is blocked.") from error
+        if installed_lerobot not in {"0.6.1", "0.6.2"}:
+            raise RuntimeError(f"SO-101 adapter was API-checked for LeRobot 0.6.1/0.6.2; found {installed_lerobot}.")
         owner = SerialPortOwner(port, f"{self.role}-connection").acquire()
         try:
             if self.role == "leader":
                 from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 
-                candidate = SO101Leader(SO101LeaderConfig(port=port, id=device_id))
+                candidate = SO101Leader(SO101LeaderConfig(port=port, id=device_id, use_degrees=True))
             else:
                 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
@@ -156,6 +191,7 @@ class LeRobotSO101Adapter:
         self.port = port
         self.device_id = device_id
         self._serial_owner = owner
+        self.last_error = None
         return self.status()
 
     def disconnect(self) -> dict[str, Any]:
@@ -170,6 +206,7 @@ class LeRobotSO101Adapter:
             if self._serial_owner is not None:
                 self._serial_owner.release()
                 self._serial_owner = None
+        self.last_error = None
         return self.status()
 
     def joint_state(self) -> dict[str, Any]:
@@ -177,19 +214,37 @@ class LeRobotSO101Adapter:
             raise RuntimeError("SO-101 is not connected.")
         if not self.calibration_ready:
             raise RuntimeError("Calibration is not verified; joint readings are blocked.")
-        observation = self.robot.get_observation()
-        values = {name: float(observation[f"{name}.pos"]) for name in JOINTS}
-        if not all(map(math.isfinite, values.values())):
-            raise RuntimeError("SO-101 returned non-finite joint readings.")
-        return {"mode": self.mode, "measured": True, "timestamp": time.time(), "joints": values}
+        try:
+            observation = self.robot.get_action() if self.role == "leader" else self.robot.get_observation()
+            values = normalize_joint_positions(observation)
+        except Exception as error:
+            try:
+                self.disconnect()
+            finally:
+                self.last_error = f"SO-101 {self.role} disconnected after read failure: {error}"[:300]
+            raise ConnectionError(self.last_error) from error
+        return {"mode": self.mode, "measured": True, "timestamp": time.time(), "unit": "deg",
+                "jointNames": list(JOINTS), "joints": values, "deviceId": self.device_id, "slot": self.slot}
 
 
 class EdgeRuntime:
     def __init__(self, *, simulated: Adapter | None = None, physical: Adapter | None = None,
-                 leader: Adapter | None = None) -> None:
+                 leader: Adapter | None = None, arms: dict[str, Adapter] | None = None) -> None:
         self.simulated = simulated or SimulatedSO101()
-        self.physical = physical or LeRobotSO101Adapter()
-        self.leader = leader or LeRobotSO101Adapter("leader")
+        self.arms: dict[str, LeRobotSO101Adapter | Adapter] = {
+            "leader-a": leader or LeRobotSO101Adapter("leader", "leader-a"),
+            "follower-a": physical or LeRobotSO101Adapter("follower", "follower-a"),
+            "leader-b": LeRobotSO101Adapter("leader", "leader-b"),
+            "follower-b": LeRobotSO101Adapter("follower", "follower-b"),
+        }
+        if arms:
+            unknown_slots = set(arms) - set(self.arms)
+            if unknown_slots:
+                raise ValueError(f"Unsupported SO-101 arm slots: {', '.join(sorted(unknown_slots))}.")
+            self.arms.update(arms)
+        # Compatibility aliases for existing Phase 1 IPC and tests.
+        self.leader = self.arms["leader-a"]
+        self.physical = self.arms["follower-a"]
         self.calibration = CalibrationWorkflow(port_provider=self.physical.ports)
         self.teleoperation = Teleoperation()
         self.mujoco = MuJoCoSimulation()
@@ -232,7 +287,9 @@ class EdgeRuntime:
             return {"policyId": inference["policyId"], "promptUsed": inference["promptUsed"],
                     "action": inference["action"], "simulation": inference["simulation"], "motionEnabled": False}
         if method == "status":
-            return {"activeMode": self.active, "simulation": self.mujoco.status(), "robotSimulation": self.simulated.status(), "physical": self.physical.status(), "leader": self.leader.status(),
+            arm_status = {slot: adapter.status() for slot, adapter in self.arms.items()}
+            return {"activeMode": self.active, "simulation": self.mujoco.status(), "robotSimulation": self.simulated.status(), "arms": arm_status,
+                    "physical": arm_status["follower-a"], "leader": arm_status["leader-a"],
                     "motionEnabled": False, "teleoperation": self.teleoperation.status()}
         if method == "teleop_status":
             return self.teleoperation.status()
@@ -281,49 +338,70 @@ class EdgeRuntime:
             if not isinstance(selected_port, str) or selected_port not in {row.get("path") for row in self.physical.ports()}:
                 raise ValueError("Select a currently discovered serial port; ports are never guessed.")
             role = params.get("role", "follower")
-            if role not in {"leader", "follower"}:
-                raise ValueError("Select leader or follower explicitly.")
-            adapter = self.leader if role == "leader" else self.physical
-            other = self.physical if role == "leader" else self.leader
-            other_status = other.status()
-            if other_status.get("connected") and other_status.get("port") == selected_port:
-                raise ValueError("Leader and follower must use different serial ports.")
+            slot = params.get("slot") or ("leader-a" if role == "leader" else "follower-a" if role == "follower" else None)
+            if slot not in self.arms:
+                raise ValueError("Select Leader A, Follower A, Leader B, or Follower B explicitly.")
+            adapter = self.arms[slot]
+            expected_role = "leader" if slot.startswith("leader-") else "follower"
+            if expected_role != role:
+                raise ValueError("Selected device slot does not match the requested LeRobot role.")
+            if any(other.status().get("connected") and other.status().get("port") == selected_port
+                   for other_slot, other in self.arms.items() if other_slot != slot):
+                raise ValueError("A serial port can be owned by only one robot arm at a time.")
             status = adapter.connect(selected_port, params.get("deviceId"))
+            status["slot"] = slot
             self.active = "PHYSICAL ROBOT READ ONLY"
             return status
         if method == "disconnect":
+            slot = params.get("slot")
             role = params.get("role")
+            if slot is not None:
+                if slot not in self.arms:
+                    raise ValueError("Select one of the four SO-101 arm slots.")
+                result = self.arms[slot].disconnect()
+                result["slot"] = slot
+                if not any(item.status().get("connected") for item in self.arms.values()):
+                    self.active = "SIMULATION"
+                return result
             if role is None:
-                follower_status = self.physical.disconnect()
-                leader_status = self.leader.disconnect()
+                follower_status = {key: self.arms[key].disconnect() for key in ("follower-a", "follower-b")}
+                leader_status = {key: self.arms[key].disconnect() for key in ("leader-a", "leader-b")}
                 self.active = "SIMULATION"
                 return {"follower": follower_status, "leader": leader_status, "motionEnabled": False}
             if role not in {"leader", "follower"}:
                 raise ValueError("Select leader or follower explicitly.")
-            adapter = self.leader if role == "leader" else self.physical
+            adapter = self.arms["leader-a" if role == "leader" else "follower-a"]
             status = adapter.disconnect()
-            if not self.physical.status().get("connected") and not self.leader.status().get("connected"):
+            if not any(item.status().get("connected") for item in self.arms.values()):
                 self.active = "SIMULATION"
             return status
         if method == "joint_state":
             role = params.get("role", "follower")
             if role not in {"leader", "follower"}:
                 raise ValueError("Select leader or follower explicitly.")
-            adapter = self.leader if role == "leader" else self.physical
-            return adapter.joint_state() if adapter.status().get("connected") else self.simulated.joint_state()
+            slot = params.get("slot")
+            if slot is None:
+                slot = "leader-a" if role == "leader" else "follower-a"
+            if slot not in self.arms or self.arms[slot].role != role:
+                raise ValueError("Select a device slot matching the Leader/Follower role.")
+            adapter = self.arms[slot]
+            if not adapter.status().get("connected"):
+                raise ConnectionError("Selected physical SO-101 arm is disconnected; simulated values are not substituted.")
+            return adapter.joint_state()
         if method == "calibration_status":
             return self.calibration.status()
         if method == "calibration_profiles":
             return self.calibration.profiles(params.get("role"))
         if method == "calibration_start":
-            if self.physical.status().get("connected") or self.leader.status().get("connected"):
-                raise RuntimeError("Disconnect both robot roles before starting calibration.")
+            if any(item.status().get("connected") for item in self.arms.values()):
+                raise RuntimeError("Disconnect all robot arms before starting calibration.")
             params_role = params.get("role")
             params_port = params.get("port")
-            other = self.leader if params_role == "follower" else self.physical
-            if other.status().get("connected") and other.status().get("port") == params_port:
-                raise RuntimeError("The selected serial port is already owned by the other robot role.")
-            return self.calibration.start(params_role, params_port, params.get("profileId"), params.get("confirmed") is True)
+            if params_role not in {"leader", "follower"}:
+                raise ValueError("Select Leader or Follower calibration explicitly.")
+            if not isinstance(params.get("profileId"), str) or not params["profileId"].strip():
+                raise ValueError("Calibration profile ID must identify this physical arm.")
+            return self.calibration.start(params_role, params_port, params.get("profileId"), params.get("confirmed") is True, params.get("slot"))
         if method == "calibration_complete_step":
             return self.calibration.complete_step()
         if method == "calibration_stop":
@@ -335,15 +413,26 @@ class EdgeRuntime:
 
     def close(self) -> None:
         self._stop.set()
-        try:
-            for pair_id in ("pair-a", "pair-b"):
+        for pair_id in ("pair-a", "pair-b"):
+            try:
                 self.teleoperation.disconnect(pair_id)
+            except Exception:
+                logger.exception("fake teleoperation disconnect failed during shutdown")
+        try:
             self.calibration.stop()
-            self.policies.unload()
-            self.physical.disconnect()
-            self.leader.disconnect()
         except Exception:
-            logger.exception("robot disconnect failed during shutdown")
+            logger.exception("calibration stop failed during shutdown")
+        # A failure closing one arm or unloading a policy must not skip the
+        # remaining independent serial buses.
+        for slot, adapter in self.arms.items():
+            try:
+                adapter.disconnect()
+            except Exception:
+                logger.exception("SO-101 %s disconnect failed during shutdown", slot)
+        try:
+            self.policies.unload()
+        except Exception:
+            logger.exception("policy unload failed during shutdown")
 
 
 def serve(runtime: EdgeRuntime | None = None, reader=sys.stdin, writer=sys.stdout) -> None:

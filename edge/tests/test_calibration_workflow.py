@@ -68,12 +68,14 @@ class CalibrationWorkflowTests(unittest.TestCase):
     def test_guided_range_recording_saves_only_after_step_confirmation(self):
         started = self.workflow.start("leader", "/dev/fake-so101", "leader-profile", True)
         self.assertTrue(started["active"])
+        self.assertEqual(started["deviceState"], "CALIBRATING")
         self.wait_for(lambda: self.workflow.status()["status"] == "recording"
                       and self.device.bus.reads >= 4)
         self.workflow.complete_step()
         self.wait_for(lambda: not self.workflow.status()["active"])
         status = self.workflow.status()
         self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["deviceState"], "CALIBRATED")
         self.assertTrue(status["calibrated"])
         self.assertFalse(status["motionEnabled"])
         self.assertEqual(self.created, [("leader", "/dev/fake-so101", "leader-profile")])
@@ -89,7 +91,13 @@ class CalibrationWorkflowTests(unittest.TestCase):
         self.assertFalse(status["active"])
         self.assertEqual(status["status"], "cancelled")
         self.assertFalse(status["calibrated"])
+        self.assertEqual(status["deviceState"], "DISCONNECTED")
         self.assertFalse(self.device.saved)
+
+    def test_calibration_slot_must_match_role(self):
+        with self.assertRaises(ValueError):
+            self.workflow.start("leader", "/dev/fake-so101", "leader-profile", True, "follower-b")
+        self.assertEqual(self.workflow.status()["deviceState"], "DISCONNECTED")
 
     def test_profile_listing_is_role_scoped_and_ignores_symlinks(self):
         with tempfile.TemporaryDirectory(prefix="vista-calibration-profiles-") as directory, patch.dict(

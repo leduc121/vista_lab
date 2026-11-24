@@ -58,6 +58,9 @@ function toUrdfRadians(name, reading) {
 
 export function frameJointTargets(frame, now = Date.now()) {
   if (!frame || frame.connection !== 'connected') return {};
+  // Physical measurements are useful for diagnostics, but the handoff requires
+  // an uncalibrated physical pose to remain frozen in the model.
+  if (frame.source_mode === 'LIVE_PHYSICAL' && frame.calibration_status !== 'VERIFIED') return {};
   const measuredAt = Date.parse(frame.measured_at);
   if (!Number.isFinite(measuredAt) || now - measuredAt > 5000) return {};
   const readings = frame.source_mode === 'LIVE_PHYSICAL'

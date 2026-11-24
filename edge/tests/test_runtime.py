@@ -6,29 +6,38 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 
-from edge.runtime import EdgeRuntime, RUNTIME_VERSION, serve
+from edge.runtime import EdgeRuntime, LeRobotSO101Adapter, RUNTIME_VERSION, normalize_joint_positions, serve, JOINTS
 
 
 class FakePhysical:
     mode = "PHYSICAL ROBOT READ ONLY"
 
-    def __init__(self):
+    def __init__(self, role="follower", slot="follower-a", ports=None):
+        self.role = role
+        self.slot = slot
+        self.available_ports = ports or ["/dev/test-serial"]
         self.connected = False
+        self.port = None
         self.calls = []
+        self.disconnect_calls = 0
 
     def ports(self):
-        return [{"path": "/dev/test-serial", "likelyRobot": True}]
+        return [{"path": port, "likelyRobot": True} for port in self.available_ports]
 
     def status(self):
-        return {"mode": self.mode, "connected": self.connected, "calibrated": False, "motionEnabled": False}
+        return {"mode": self.mode, "role": self.role, "slot": self.slot, "port": self.port,
+                "connected": self.connected, "calibrated": False, "motionEnabled": False}
 
     def connect(self, port, device_id):
         self.calls.append((port, device_id))
         self.connected = True
+        self.port = port
         return self.status()
 
     def disconnect(self):
+        self.disconnect_calls += 1
         self.connected = False
+        self.port = None
         return self.status()
 
     def joint_state(self):
@@ -48,6 +57,92 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("mujoco", health["drivers"])
         self.assertEqual(status["physical"]["mode"], "PHYSICAL ROBOT READ ONLY")
         self.assertFalse(status["motionEnabled"])
+        self.assertEqual(set(status["arms"]), {"leader-a", "follower-a", "leader-b", "follower-b"})
+
+    def test_four_arm_slots_are_independent_and_serial_ports_are_exclusive(self):
+        ports = ["/dev/fake-a", "/dev/fake-b", "/dev/fake-c", "/dev/fake-d"]
+        adapters = {
+            "leader-a": FakePhysical("leader", "leader-a", ports),
+            "follower-a": FakePhysical("follower", "follower-a", ports),
+            "leader-b": FakePhysical("leader", "leader-b", ports),
+            "follower-b": FakePhysical("follower", "follower-b", ports),
+        }
+        runtime = EdgeRuntime(physical=adapters["follower-a"], leader=adapters["leader-a"], arms=adapters)
+        def connect(slot, port):
+            return runtime.handle({"id": slot, "method": "connect", "params": {
+                "mode": "PHYSICAL ROBOT READ ONLY", "confirmed": True,
+                "role": "leader" if slot.startswith("leader") else "follower",
+                "slot": slot, "port": port, "deviceId": slot}})
+        connect("leader-a", ports[0])
+        connect("follower-a", ports[1])
+        with self.assertRaises(ValueError):
+            connect("leader-b", ports[0])
+        connect("leader-b", ports[2])
+        connect("follower-b", ports[3])
+        snapshot = runtime.handle({"id": "status", "method": "status"})["arms"]
+        self.assertEqual({slot for slot, state in snapshot.items() if state["connected"]}, set(adapters))
+        runtime.handle({"id": "disconnect-b", "method": "disconnect", "params": {"slot": "follower-b"}})
+        self.assertTrue(adapters["leader-b"].connected)
+        self.assertFalse(adapters["follower-b"].connected)
+
+    def test_shutdown_attempts_disconnect_for_every_arm_even_when_one_fails(self):
+        ports = ["/dev/fake-a"]
+        adapters = {slot: FakePhysical("leader" if slot.startswith("leader") else "follower", slot, ports)
+                    for slot in ("leader-a", "follower-a", "leader-b", "follower-b")}
+        runtime = EdgeRuntime(physical=adapters["follower-a"], leader=adapters["leader-a"], arms=adapters)
+        def fail_disconnect():
+            adapters["leader-b"].disconnect_calls += 1
+            raise OSError("simulated bus close failure")
+        adapters["leader-b"].disconnect = fail_disconnect
+        runtime.close()
+        self.assertEqual({arm.disconnect_calls for arm in adapters.values()}, {1})
+
+    def test_joint_normalization_requires_all_named_finite_values_and_ignores_order(self):
+        reordered = {f"{name}.pos": index + 0.25 for index, name in enumerate(reversed(JOINTS))}
+        normalized = normalize_joint_positions(reordered)
+        self.assertEqual(list(normalized), list(JOINTS))
+        self.assertEqual(normalized[JOINTS[0]], 5.25)
+        for invalid in ({}, {**reordered, "gripper.pos": float("nan")}, {**reordered, "gripper.pos": float("inf")}):
+            with self.assertRaises(ValueError):
+                normalize_joint_positions(invalid)
+
+    def test_leader_reads_public_get_action_and_follower_reads_public_observation(self):
+        class FakeLeRobotDevice:
+            is_connected = True
+            def __init__(self, method): self.method = method
+            def get_action(self): return {f"{name}.pos": index for index, name in enumerate(reversed(JOINTS))}
+            def get_observation(self): return {name: index + 0.5 for index, name in enumerate(JOINTS)}
+            def disconnect(self): self.is_connected = False
+
+        leader = LeRobotSO101Adapter("leader", "leader-a")
+        leader.robot = FakeLeRobotDevice("get_action")
+        leader.calibration_ready = True
+        leader.device_id = "leader-a-id"
+        lead_frame = leader.joint_state()
+        self.assertEqual(lead_frame["jointNames"], list(JOINTS))
+        self.assertEqual(lead_frame["unit"], "deg")
+        self.assertEqual(lead_frame["joints"][JOINTS[0]], 5.0)
+        self.assertEqual(lead_frame["slot"], "leader-a")
+
+        follower = LeRobotSO101Adapter("follower", "follower-b")
+        follower.robot = FakeLeRobotDevice("get_observation")
+        follower.calibration_ready = True
+        follower_frame = follower.joint_state()
+        self.assertEqual(follower_frame["joints"][JOINTS[0]], 0.5)
+        self.assertEqual(follower_frame["slot"], "follower-b")
+
+    def test_failed_usb_joint_read_disconnects_and_does_not_reuse_values(self):
+        class UnpluggedDevice:
+            is_connected = True
+            def get_action(self): raise OSError("USB device removed")
+            def disconnect(self): self.is_connected = False
+        adapter = LeRobotSO101Adapter("leader", "leader-a")
+        adapter.robot = UnpluggedDevice()
+        adapter.calibration_ready = True
+        with self.assertRaisesRegex(ConnectionError, "disconnected after read failure"):
+            adapter.joint_state()
+        self.assertFalse(adapter.status()["connected"])
+        self.assertEqual(adapter.status()["state"], "ERROR")
 
     def test_fixture_policy_runs_through_mujoco_and_emits_twin_telemetry(self):
         class FixturePolicy:
