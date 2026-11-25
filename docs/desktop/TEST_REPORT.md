@@ -1,5 +1,46 @@
 # Queue 5 final Desktop acceptance — 2026-11-20
 
+## Current completion verification — 2026-11-23
+
+This update supersedes earlier status statements below where they conflict. The
+complete current matrix and blockers are in
+[`../DESKTOP_FULL_ACCEPTANCE.md`](../DESKTOP_FULL_ACCEPTANCE.md).
+
+- `npm test`: **39 passed, 0 failed**.
+- `edge/.venv/bin/python -m unittest discover -s edge/tests -v`:
+  **51 passed, 0 failed, 1 skipped** on Linux, including MuJoCo and fake-only
+  teleoperation. The Windows-only ACL fail-closed test is platform-skipped.
+- `npm run typecheck`, `npm run build:renderer`, `npm run smoke`, and
+  `npm run smoke:electron`: **passed**. UI smokes use Demo fixtures and fake
+  devices; they do not represent backend persistence or physical operation.
+- `scripts/run-isolated-lms-e2e.sh`: **passed, exit 0** against a uniquely
+  labeled disposable Education API/GoTrue/PostgreSQL stack. The events route,
+  schematic result, submission and independent database readback passed.
+  Temporary-password and live Twin suites were skipped without test-owned
+  credentials/endpoints. Private evidence is at
+  `/tmp/vista-lms-ae9693dc-evidence`.
+- `VISTA_EDGE_PYTHON=edge/.venv/bin/python npm run dist`: **passed** for Linux
+  x64 AppImage and DEB. The Linux Edge runtime bundle explicitly includes
+  `OpenGL.platform.egl`; without it the packaged simulator was unavailable
+  under the Electron `MUJOCO_GL=egl` environment.
+- Packaged Linux Electron opened under Xvfb with sandbox enabled. The Edge
+  executable in `dist/linux-unpacked/resources` loaded the packaged SO-101
+  scene with EGL and returned safe shutdown. AppImage extract-and-run also
+  showed its window; host has no FUSE device. Clean-machine install and target
+  platform camera rendering remain unverified.
+- No Windows/macOS build, real Twin session, evidence-storage service,
+  physical hardware session, Production/AWS access, publication, or merge was
+  performed.
+- Follow-up CI review found a stale npm lockfile, Windows POSIX-mode
+  assumptions in MQTT fakes, and unsupported MuJoCo Intel Mac source builds.
+  The lockfile is synchronized without changing existing locked versions;
+  Windows MQTT now fails closed pending ACL validation; the native matrix uses
+  Apple Silicon macOS. A subsequent matrix confirmed the Python suites but
+  found a slow-start timing assumption in a Node fake-teleoperation test and a
+  required Linux-only esbuild binary on non-Linux runners. The test now uses
+  request/response sequencing, the binary is optional, and macOS ARM64/Windows
+  x64 npm lock dry-runs pass locally. A fresh native matrix is pending.
+
 Backend contracts were read only from the latest available backend sprint source. No backend writes, Production/AWS calls, upload, or physical robot access occurred. **Local release candidate only; live integration and public release are not accepted.** Earlier Queue 1–4 reports are historical; the hashes and results below supersede earlier package hashes.
 
 ## Feature matrix
@@ -138,6 +179,50 @@ statements above where results differ.
   GUI launch was not accepted. This was an extracted-package check on the same
   Linux host, not a different clean OS image or an installed DEB test.
 - Latest AppImage SHA-256: `506bc130895f8e0c11fd4f1307fc4cd434e108e22ce7e8bb113d967116a356fe`.
+
+## Final integration continuation — 2026-11-20
+
+This entry supersedes the earlier smoke and Twin dependency statements above.
+
+### UI smoke hang
+
+- **PASS — Chromium Demo UI:** `timeout 75s npm run smoke` completed. It exercised My Labs, workspace navigation/layout, Save, version creation, Demo schematic result, submit state, Twin navigation and assignment, URDF/STL model load, and Settings layout. Screenshots are in `/tmp/vista-desktop-smoke`.
+- Save/version/simulation/submission evidence is **Demo fixture only**. No attempt, program, experiment or result was written to Education API in this smoke.
+- The hang was caused by eagerly mounting a second Three.js SO-101 viewer in Blockly even when no local MuJoCo run had started. The page kept a WebGL render loop active; opening the dedicated Twin screen then initialized another renderer and headless SwiftShader stopped servicing browser work. Workspace navigation also previously left a pending viewer load without a cancellation handle. The workspace viewer now mounts only when local MuJoCo is requested, and both workspace and Twin views cancel pending loads and dispose renderers on navigation.
+- The smoke captures HTTP failures and renderer errors, ignoring only Chrome's default `/favicon.ico` probe from the development preview. It verifies the workspace viewer is lazy and that the separate Twin screen loads its URDF/STL. This is Chromium UI acceptance, **not native Electron acceptance**.
+
+### Local Twin service and protocol
+
+- **PASS — Twin service unit/integration tests:** the backend checkout's existing Python 3.12 environment ran `tests/test_attempt_scope.py`, `tests/test_app.py`, and `tests/test_mujoco_sync.py`: **9 passed**. Pytest warned that its cache could not be written because the backend checkout is read-only; no backend files were changed.
+- **PASS — local browser Twin socket/render/revocation:** started the current Twin service on loopback using its installed dependencies. A temporary test harness published six-joint SIMULATION frames to the real server with a short-lived test-only HMAC publisher scope. Chromium opened the actual `/ws/twin` socket with `vista.twin.<scope>`, rendered all six readings in the Desktop Twin viewer, and showed `Connected · SIMULATION`. The service's signed local attempt-revoke request closed that viewer with the expected authorization denial (4403). The scope and identity were test fixtures minted only for this local test; **Education API student authorization and Desktop-generated MuJoCo ingestion were not exercised**.
+- The ordinary Twin page also loads the bundled SO-101 URDF/STL model with no authorized robot and keeps Connect disabled. This is model/viewer rendering, not authorized telemetry acceptance.
+
+### Current backend and remaining integration status
+
+Backend source was rechecked read-only at `f42ca25cf1ead5460c53c1d8c357252474203a63`.
+
+| Flow | Type | Status | Evidence / boundary |
+| --- | --- | --- | --- |
+| My Labs → Blockly Save/version → Demo result/submit | Chromium fixture UI | **PASS** | The preview shim labels Demo behavior; no backend persistence is claimed. |
+| Dedicated Twin model viewer | Chromium UI | **PASS** | URDF/STL loaded in the actual browser surface; no connection is offered in Demo mode. |
+| Twin authorized WebSocket with signed scope, frames, 4403 revocation | Local service/browser integration | **PASS (test-only scope)** | Uses the real Twin service and viewer, but a test-minted scope and server publisher call rather than Education API-issued authorization. |
+| Student login → assigned lab → attempt → real Save/version → simulation → result → submit | Real Education API UI | **BLOCKED** | GoTrue health is available at local `:54321`; no local Education API answered on `:3001`. No real UI workflow was run. |
+| Admin-issued enrollment → Ed25519 challenge → `/devices/me` → heartbeat → revoke | Real provisioning API | **BLOCKED** | Current backend has the documented routes, but no Education API test service or School Admin-issued one-time code/session was available. No code or success response was fabricated. |
+| Desktop MuJoCo telemetry → authorized Twin | Backend contract | **BLOCKED** | Current Education API source has no student-authenticated simulation-frame ingestion route. `POST /internal/simulation-telemetry` is server-to-server and remains forbidden to Desktop. |
+| Twin reconnection in Desktop against Education API-issued scope | Real API/browser integration | **NOT TESTED** | Local test covered initial socket, live updates and revocation; it did not test Education API scope refresh/reconnect. |
+| Native Electron login/workspace | Native Electron | **NOT TESTED** | The UI smoke used system Chromium. |
+| Physical SO-101 movement | Hardware | **NOT TESTED** | No port was opened and no robot was moved. |
+
+The actual backend source exposes device routes `POST /api/v1/devices/enroll/start`, `POST /api/v1/devices/enroll/complete`, `POST /api/v1/devices/auth/challenge`, `POST /api/v1/devices/auth/token`, `GET /api/v1/devices/me`, and `POST /api/v1/devices/me/heartbeat`; School Admin management routes are under `/api/v1/education-admin/organizations/:organizationId/devices`. It also has `POST /api/v1/me/attempts/:attemptId/digital-twin/viewer-scope` and `WS /ws/twin`. These are source-verified, not Desktop real-backend E2E results.
+
+The backend offers a local stack script, but its `up` path kills every process matching `node dist/main` and removes shared `/tmp/vista-*-fixture-int.json` files. It was not invoked. The existing local Supabase GoTrue health endpoint returned HTTP 200; the Education API was absent. No backend repository files or databases were changed.
+
+### Regression and Git state
+
+- `npm test`: **19 API/security contract tests and 3 Node test suites passed**.
+- `npm run typecheck`: **passed**; `git diff --check`: **passed**.
+- Git metadata is **sandbox read-only**, not a mode-bit/ownership problem: `.git` is owned by the current user and mode `drwxrwxr-x`, but `findmnt` reports a nested ext4 mount with `ro`. No Git metadata was changed and no commit was attempted.
+- Current Desktop changes to review/commit: `renderer/features.js`, `renderer/twin-viewer.js`, generated `renderer/app.bundle.js`, `scripts/desktop-smoke.cjs`, `docs/desktop/ARCHITECTURE.md`, `docs/desktop/BACKEND_HANDOFF.md`, and this report. No backend files were modified. No AWS or physical hardware was accessed.
   Latest DEB SHA-256: `e34bec3180d241887af8412b27e86ec839d2c1b53c870f1c0e3c06943a588a38`.
 - Renderer smoke opened My Labs and the Blockly/MuJoCo workspace at 1420×960
   and printed a non-overflowing two-column workspace layout. The test then hung
@@ -185,3 +270,164 @@ statements above where results differ.
 - **PASS** MJCF/URDF source comparison: canonical joint names and +Z axes match; parsed elbow and wrist-roll limits are equal at the displayed precision. No simulation limit correction was made. Gripper units remain unmapped.
 - **NOT RUN** mTLS MQTT against backend-issued device identity; no MQTT credential issuance contract exists. **NOT RUN** installer rebuild/clean installation, Windows/macOS native CI, full visual/accessibility/responsive acceptance, device lifecycle and revocation E2E. GitHub `origin/main` still points to the parent commit and matches local base; these changes have not been committed/pushed yet. No AWS deployment or physical hardware was used.
 - Current environment check: `.git` is an ext4 mount with `ro` mount option even though its files are owned by the current user and mode bits allow writes. This is a sandbox mount restriction, not a Unix ownership/mode issue. FastAPI, Uvicorn, wsproto, and MuJoCo are not installed; `uv` is unavailable and outbound package resolution failed. The real Twin service cannot start here without provisioning those dependencies in a permitted environment.
+
+## LeLab SO-101 station update — 2026-11-20
+
+- The source review is recorded in [LELAB_SO101_UX.md](LELAB_SO101_UX.md). The local LeLab clone was already dirty at commit `84b6251cec3471195dfa35119827fbd1da2a801e`; it was not changed. VISTA reused the observed LeRobot leader/follower APIs and calibration sequence, not LeLab source files or training/data screens.
+- Added separate leader/follower read-only adapter selection, real pyserial discovery, role-scoped LeRobot calibration profile listing, calibrated joint readback, disconnect handling, cross-process serial locks, and a guided operator-confirmed calibration worker. Physical teleoperation Start remains disabled and no hardware motion API exists.
+- **PASS** `python3 -m unittest discover -s edge/tests`: 22 tests, 5 skipped. Added calibration state/profile tests and lock ownership tests use fake device/ports. No test opened a serial port.
+- **PASS** `npm test`: 19 API contract tests and 10 Node supervisor/provisioning/simulation tests passed.
+- **PASS** `npm run typecheck` and `git diff --check`.
+- **PASS (browser-demo UI smoke only)** `npm run smoke`: the full existing workspace Save/version/run/result/submit flow completed; the new connection screen displayed an empty discovered-port state; calibration panel showed no profiles and kept Start disabled; physical teleoperation stayed disabled. Chromium screenshots are under `/tmp/vista-desktop-smoke/robot-connection-calibration.png` and `/tmp/vista-desktop-smoke/robot-calibration-teleoperation.png`. This preview did not access the Education API, Twin socket, LeRobot device, or physical hardware.
+- **BLOCKED (hardware)** No supported serial device is attached or was authorized for a supervised session. No hardware connection, calibration, reconnection, live joint value, or physical stop behavior is accepted.
+- **BLOCKED (LeRobot packaging)** `requirements-edge.txt` still does not bundle LeRobot; runtime calls fail honestly when it is absent. Cross-OS Python packaging, USB driver permissions, and LeRobot API compatibility on the packaged Python remain unverified. Windows/macOS builds and physical teleoperation are not accepted.
+- **NOT IMPLEMENTED** physical teleoperation remains blocked pending backend/attempt authorization, deadman/stop design, and hardware validation. Twin remains the existing authorized viewer; Desktop does not call internal telemetry routes.
+- The previous incomplete-smoke notes above are historical. This section records the latest successful browser-demo smoke. Existing seven pending changes were preserved; no commit or push was attempted.
+# Final LMS sync acceptance retry — 2026-11-20
+
+See [STUDENT_LMS_SYNC_AUDIT.md](STUDENT_LMS_SYNC_AUDIT.md) for the route audit, feature PASS/BLOCKED matrix, and isolated host setup. The real Student ↔ API ↔ Desktop integration could not be run: Docker socket access was denied, expected local services were absent, and the test-only account/attempt variables were not configured. Desktop contract tests pass; no Production, AWS, or physical hardware was accessed. No commit or push was made.
+
+## Final completion sprint verification — 2026-11-21
+
+This addendum records checks performed against the current uncommitted working
+tree. Older entries above refer to earlier source states and must not be used as
+acceptance evidence for a current-source release.
+
+- `npm test`: **30 passed, 0 failed** (20 API/security contract cases and 10
+  Node runtime/provisioning cases).
+- `python3 -m unittest discover -s edge/tests -v`: **18 passed, 0 failed,
+  5 skipped**. All skips require MuJoCo, which is unavailable in the active
+  Python 3.14 environment. No hardware port was opened.
+- `npm run typecheck`: **passed** JavaScript syntax checks.
+- `npm run build:renderer`: **passed** and regenerated the tracked renderer
+  bundle from the current source.
+- `bash -n scripts/run-isolated-lms-e2e.sh` and
+  `scripts/run-isolated-lms-e2e.sh --self-test`: **passed**. The self-test only
+  checks runner input/ownership guards; no Docker, localhost service, or
+  database was touched. The runner was reviewed and changed to start PostgreSQL
+  before schema bootstrap and start GoTrue afterward; Node's heap is capped at
+  768 MiB. Real host-side E2E has not run.
+- `timeout 75s npm run smoke`: **BLOCKED** before Chromium launch. Crashpad
+  returned `setsockopt: Operation not permitted` in the managed sandbox. No
+  Electron page journey is claimed from this attempt. Previous Demo smoke
+  results are retained above as historical evidence only.
+- The POSIX serial lock now opens with `O_NOFOLLOW`, validates a regular
+  current-user-owned file, and enforces private permissions. The new symlink
+  regression test passed and confirmed its target content was unchanged.
+- `mujoco`, `paho-mqtt`, and PyInstaller are absent from the active Python.
+  MuJoCo, package-build, and current-source installer acceptance therefore
+  remain blocked. No existing packaged binary was replaced.
+- No isolated Education API/GoTrue/database journey, browser Twin WebSocket,
+  device enrollment, real broker mTLS, real hardware session, Windows/macOS
+  native build, commit, push, AWS call, or Production/shared Supabase mutation
+  was performed.
+
+See [FINAL_ACCEPTANCE.md](FINAL_ACCEPTANCE.md) for the feature matrix,
+acceptance ratios, and final verdict, and [RELEASE_READINESS.md](RELEASE_READINESS.md)
+for packaging gates. The Desktop is **not yet complete**: fake-device
+teleoperation has since been implemented for simulation only; live LMS, Twin,
+packaging, browser UI and hardware acceptance remain outstanding.
+
+## Fake-device teleoperation implementation — 2026-11-21
+
+- Added `edge/teleoperation.py` as an in-memory teleoperation capability inside
+  the existing Edge Runtime. It imports no serial or LeRobot actuator modules
+  and accepts only distinct, pair-owned `fake://` ports for Pair A and Pair B.
+- Added six-joint radian validation and normalized name mapping, joint bounds,
+  per-joint velocity limits, a 40 ms minimum command interval, monotonic sequence
+  checks, wall-clock input freshness checks, connection-loss rejection, and a
+  150 ms independent deadman watchdog.
+- Operator flow is connect fake pair → explicitly enable → hold-to-run. Releasing
+  the pointer/key, losing focus, navigating away, logging out, or missing the
+  heartbeat blocks further commands. Emergency stop latches until explicit
+  reset; reset leaves the pair disabled. Reconnect always returns DISABLED.
+- The SO-101 station exposes two fake pair choices, six simulated Leader sliders,
+  explicit enable/disable, hold-to-run, emergency stop/reset, disconnect, state
+  and feedback. The existing SO-101 Twin viewer consumes validated fake
+  simulation frames; it loads only when requested.
+- Physical follower commands remain impossible through this path. The existing
+  physical adapter remains read-only; no hardware was opened or moved.
+- `edge/tests/test_teleoperation.py`: **15 teleoperation cases passed**, covering
+  the requested mapping, deadman, e-stop/reset, position/velocity/rate limits,
+  stale timestamp and sequence, timeout, connection loss, pair/port ownership,
+  rearming, and Twin frame contract. `tests/teleoperation.test.cjs` verifies the
+  same Edge JSON-lines service path including telemetry and emergency stop.
+- Final verification after implementation: `npm test` **31 passed**;
+  `python3 -m unittest discover -s edge/tests -v` **33 passed, 5 skipped**;
+  `npm run typecheck` passed; `npm run build:renderer` passed.
+- `timeout 75s npm run smoke` remains **BLOCKED** before Chromium page launch:
+  the sandbox denied Crashpad `setsockopt` with `Operation not permitted`. The
+  smoke launcher now leaves Chromium's sandbox enabled. From a normal Ubuntu
+  terminal, the UI smoke command is `npm run smoke` from the Desktop repository.
+- No physical teleoperation acceptance is claimed. LMS, live Twin WebSocket,
+  MuJoCo-dependent tests, installer acceptance, and supervised hardware checks
+  are still outstanding.
+
+## Autonomous smoke and packaging follow-up — 2026-11-21
+
+This entry supersedes the preceding blocked-smoke notes for the current source
+tree. Smoke commands ran on the authorized Ubuntu host; the normal Chromium and
+Electron sandboxes remained enabled.
+
+- **PASS** `npm run smoke`: full Chrome 130 Demo journey completed, including
+  lab discovery, Blockly save/version, schematic run, Demo submission/result,
+  rendered Twin model with honest no-eligible-robot state, Settings, and Robot
+  Station. Fake Pair A connect/enable/deadman/e-stop/reset and Pair B isolation
+  passed. The physical output lock stayed disabled. Screenshots are in
+  `/tmp/vista-desktop-smoke/`.
+- **PASS** `npm run smoke:electron`: Electron 33.4.11 / Chromium 130 opened,
+  completed Demo authentication, attempt/workspace, Blockly save/version and
+  Demo schematic, verified the physical lock, then exited. Screenshot:
+  `/tmp/vista-electron-smoke/electron-workspace.png`.
+- Found and fixed a race where `.blocklySvg` appeared before asynchronous
+  handlers were attached; smoke waits for the renderer's explicit workspace
+  ready marker. Fixed Demo API allowed-action IDs so the default program passes
+  the same canonical validator as the browser Demo. Local Blockly media and its
+  Apache-2.0 notice are copied by the renderer build, eliminating blocked CDN
+  sprite requests under the strict CSP.
+- **PASS** `npm test`: 34 Node contract/runtime tests; **PASS** Edge suite:
+  39 Python tests with `edge/.venv/bin/python`, including MuJoCo model and
+  execution tests. No physical serial port was opened.
+- **PASS** `npm run typecheck` and `npm run build:renderer`.
+- **PASS (artifact/startup checks; builder exit inconclusive)** Refreshed
+  AppImage and DEB artifacts are in `/tmp/vista-desktop-release-check.X3Y81I/dist/`;
+  both opened under Xvfb with Electron sandbox enabled. The DEB was extracted,
+  not installed on a clean machine. The builder session did not return a clean
+  exit status after emitting both files. PyInstaller warned that
+  `libOSMesa.so.0` and optional `OpenGL_accelerate` were absent; packaged MuJoCo
+  execution was not checked.
+- **BLOCKED** isolated LMS E2E: the disposable runner cannot reach its own
+  Docker-published loopback PostgreSQL port from the approved execution
+  context (`psql` reports connection refused). The shared Supabase stack was
+  left untouched. Run `scripts/run-isolated-lms-e2e.sh` from the normal Ubuntu
+  terminal to complete real database persistence/readback acceptance.
+- **NOT ACCEPTED** authorized Twin WebSocket telemetry, backend-issued device
+  enrollment/MQTT mTLS, Windows/macOS builds, clean Linux installation, or
+  physical hardware. No backend, AWS, Production, or robot command was used.
+
+## Latest isolated LMS and regression verification — 2026-11-21
+
+The latest host-authorized `npm run smoke` and `npm run smoke:electron` both
+passed. Final local regressions passed: `npm test` (36 Node cases), Edge Python
+suite (39 tests), `npm run typecheck`, `npm run build:renderer`, shell syntax,
+runner safety self-test, and `git diff --check`.
+
+The Docker networking root cause was that Compose's `Internal=true` network
+does not publish ports to the host. The runner now uses a loopback-only TCP
+forwarder to the private IP of each uniquely owned service. Real disposable
+GoTrue + Education API acceptance then completed student login/refresh, course
+and lab data, attempt start/resume, Blockly save/version/history, submission,
+Web LMS projection, and cross-school/foreign-submission denial. Direct SQL
+readback confirmed the submitted attempt, program, immutable version, and
+submission rows are linked. Schematic execution succeeded and its result route
+returned persisted data.
+
+The full runner exits **FAIL (2)** because the backend events route
+`GET /api/v1/me/experiments/:id/events` returns HTTP 500; backend logs show
+`TypeError: Do not know how to serialize a BigInt`. This is a backend fix and
+was not changed here. Latest private evidence (exit status, completion log and
+SQL row snapshot): `/tmp/vista-lms-934f0c7e-evidence/`. The fixture's existing
+`learning.experiment.execute` capability is granted only inside the disposable
+database because the checked-in Phase 2.4.3 student fixture omits it. Optional
+temporary-password and Twin WebSocket flows were skipped. Shared Supabase and
+all non-runner Docker resources were left untouched.

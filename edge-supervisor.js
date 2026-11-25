@@ -7,13 +7,16 @@ const crypto = require('node:crypto');
 const readline = require('node:readline');
 
 class EdgeSupervisor {
-  constructor({ app, platform = process.platform, spawnImpl = spawn, now = Date.now, logPath, modelPath } = {}) {
+  constructor({ app, platform = process.platform, spawnImpl = spawn, now = Date.now, logPath, modelPath, runtimeProfile = 'simulation', roboticsPython = '', roboticsSource = '' } = {}) {
     this.app = app;
     this.platform = platform;
     this.spawnImpl = spawnImpl;
     this.now = now;
     this.logPath = logPath;
     this.modelPath = modelPath;
+    this.runtimeProfile = runtimeProfile === 'robotics' ? 'robotics' : 'simulation';
+    this.roboticsPython = roboticsPython;
+    this.roboticsSource = roboticsSource;
     this.child = null;
     this.pending = new Map();
     this.restarts = [];
@@ -23,6 +26,13 @@ class EdgeSupervisor {
   }
 
   command() {
+    if (this.runtimeProfile === 'robotics') {
+      const source = this.roboticsSource || (!this.app?.isPackaged ? __dirname : '');
+      const executable = this.roboticsPython;
+      const runtime = source && path.join(source, 'edge', 'runtime.py');
+      if (!executable || !runtime || !fs.existsSync(executable) || !fs.existsSync(runtime)) return null;
+      return { executable, args: [runtime], source };
+    }
     if (this.app?.isPackaged) {
       if (!process.resourcesPath) return null;
       const executable = path.join(process.resourcesPath, 'edge-runtime', this.platform === 'win32' ? 'vista-edge-runtime.exe' : 'vista-edge-runtime');
@@ -33,9 +43,10 @@ class EdgeSupervisor {
   }
 
   start() {
-    if (this.child || this.intentionalStop) return Boolean(this.child);
+    if (this.child) return true;
+    this.intentionalStop = false;
     const command = this.command();
-    if (!command) { this.startError = 'Bundled Edge Runtime executable is missing.'; return false; }
+    if (!command) { this.startError = this.runtimeProfile === 'robotics' ? 'Configured Python robotics runtime or Edge source is missing.' : 'Bundled Edge Runtime executable is missing.'; return false; }
     try {
       const bundledModel = this.app?.isPackaged && process.resourcesPath
         ? path.join(process.resourcesPath, 'models', 'so101', 'scene.xml')
@@ -43,7 +54,10 @@ class EdgeSupervisor {
       const child = this.spawnImpl(command.executable, command.args, {
         shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, VISTA_SO101_MJCF: this.modelPath || bundledModel,
-          ...(!this.app?.isPackaged ? { PYTHONPATH: [__dirname, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) } : {}) }
+          VISTA_POLICY_MODEL_DIR: path.join(this.app?.getPath?.('userData') || process.env.XDG_DATA_HOME || process.env.HOME || __dirname, 'models'),
+          ...(this.platform === 'linux' ? { MUJOCO_GL: process.env.MUJOCO_GL || 'egl' } : {}),
+          ...(command.source ? { PYTHONPATH: [command.source, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) }
+            : !this.app?.isPackaged ? { PYTHONPATH: [__dirname, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) } : {}) }
       });
       this.child = child;
       const lines = readline.createInterface({ input: child.stdout });
@@ -118,9 +132,11 @@ class EdgeSupervisor {
       if (health.version !== '0.1.0') return { state: 'BLOCKED', error: `Unsupported Edge Runtime version ${health.version}.`, health, status, restartCount: this.restarts.length };
       const driversReady = Boolean(health.drivers?.lerobot && health.drivers?.pyserial);
       const simulationReady = Boolean(health.simulation?.available);
-      return { state: simulationReady ? 'READY' : 'ACTION REQUIRED', driversReady, simulationReady, health, status, restartCount: this.restarts.length };
+      const profileReady = this.runtimeProfile !== 'robotics' || Boolean(health.drivers?.lerobot);
+      return { state: simulationReady && profileReady ? 'READY' : 'ACTION REQUIRED', driversReady, simulationReady, profileReady,
+        runtimeProfile: this.runtimeProfile, health, status, restartCount: this.restarts.length };
     } catch (error) {
-      return { state: this.child ? 'ACTION REQUIRED' : 'BLOCKED', error: error.message, restartCount: this.restarts.length };
+      return { state: this.child ? 'ACTION REQUIRED' : 'BLOCKED', runtimeProfile: this.runtimeProfile, error: error.message, restartCount: this.restarts.length };
     }
   }
 
@@ -147,11 +163,22 @@ class EdgeSupervisor {
     if (!child) return;
     try { await this.request('disconnect', {}, 1500); } catch {}
     if (!this.child) return;
-    await new Promise((resolve) => {
-      const timer = setTimeout(() => { this.terminateChild(child); resolve(); }, 1500);
-      child.once('exit', () => { clearTimeout(timer); resolve(); });
-      try { child.stdin.end(`${JSON.stringify({ id: crypto.randomUUID(), method: 'stop', params: {} })}\n`); } catch { this.terminateChild(child); }
+    const waitForExit = (timeoutMs) => new Promise((resolve) => {
+      if (this.child !== child) return resolve(true);
+      let finished = false;
+      const done = (exited) => { if (finished) return; finished = true; clearTimeout(timer); child.removeListener('exit', onExit); resolve(exited); };
+      const onExit = () => done(true);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      child.once('exit', onExit);
     });
+    try { child.stdin.end(`${JSON.stringify({ id: crypto.randomUUID(), method: 'stop', params: {} })}\n`); } catch {}
+    if (await waitForExit(1500)) return;
+    try { child.kill('SIGTERM'); } catch {}
+    if (await waitForExit(1500)) return;
+    try { child.kill('SIGKILL'); } catch {}
+    // Do not start another profile while the previous child still owns runtime state.
+    await waitForExit(3000);
+    if (this.child === child) throw new Error('Edge Runtime did not exit; profile switch is blocked to preserve single-runtime ownership.');
   }
 }
 

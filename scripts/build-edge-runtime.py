@@ -26,8 +26,17 @@ def main() -> int:
         "--name", "vista-edge-runtime", "--distpath", str(DIST.parent),
         "--workpath", str(WORK), "--specpath", str(WORK), "--paths", str(ROOT),
         "--hidden-import", "edge.mqtt_transport",
+        # MuJoCo selects its headless EGL backend dynamically from MUJOCO_GL.
+        # PyInstaller cannot infer this import, and the packaged Electron app
+        # sets MUJOCO_GL=egl on Linux for policy camera observations.
+        "--hidden-import", "OpenGL.platform.egl",
         "--collect-all", "mujoco", "--collect-all", "serial",
         "--collect-all", "paho", str(ROOT / "edge" / "runtime.py"),
+    ]
+    data_separator = ";" if sys.platform == "win32" else ":"
+    command[command.index(str(ROOT / "edge" / "runtime.py")):command.index(str(ROOT / "edge" / "runtime.py"))] = [
+        "--add-data", f"{ROOT / 'edge' / 'checkik_kinematics' / 'so101_new_calib.urdf'}{data_separator}edge/checkik_kinematics",
+        "--add-data", f"{ROOT / 'models' / 'so101'}{data_separator}models/so101",
     ]
     subprocess.run(command, cwd=ROOT, check=True)
     executable = DIST / ("vista-edge-runtime.exe" if sys.platform == "win32" else "vista-edge-runtime")

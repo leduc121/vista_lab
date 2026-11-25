@@ -8,24 +8,25 @@
   "scripts": {
     "build:renderer": "node scripts/build-renderer.cjs",
     "typecheck": "node scripts/check-source.cjs",
-    "test": "node tests/api.contract.test.cjs && node --test tests/robot-runtime.test.cjs tests/edge-supervisor.test.cjs tests/device-provisioning.test.cjs",
+    "test": "node tests/api.contract.test.cjs && node --test --test-concurrency=1 tests/robot-runtime.test.cjs tests/edge-supervisor.test.cjs tests/device-provisioning.test.cjs tests/teleoperation.test.cjs tests/container-port-forwarder.test.cjs tests/recording-manager.test.cjs tests/policy-action-recorder.test.cjs",
     "test:integration": "node scripts/integration-acceptance.cjs",
     "smoke": "npm run build:renderer && node scripts/desktop-smoke.cjs",
+    "smoke:electron": "npm run build:renderer && node scripts/electron-smoke.cjs",
     "start": "npm run build:renderer && node scripts/start-electron.cjs",
     "build:edge-runtime": "node scripts/run-edge-build.cjs",
     "dist": "npm run build:edge-runtime && npm run build:renderer && electron-builder --linux AppImage deb",
     "dist:win": "npm run build:edge-runtime && npm run build:renderer && electron-builder --win nsis",
-    "dist:mac": "npm run build:edge-runtime && npm run build:renderer && electron-builder --mac dmg"
+    "dist:mac": "npm run build:edge-runtime && npm run build:renderer && electron-builder --mac dmg",
+    "release:checksums": "node scripts/finalize-release.cjs"
   },
   "devDependencies": {
-    "@esbuild/linux-x64": "file:vendor/deps/esbuild-linux-x64-0.21.5.tgz",
     "@fontsource/geist-mono": "^5.3.0",
     "@fontsource/geist-sans": "^5.3.0",
     "@fontsource/instrument-serif": "^5.3.0",
     "blockly": "file:vendor/deps/blockly-13.4.0.tgz",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
-    "esbuild": "file:vendor/deps/esbuild-0.21.5.tgz",
+    "esbuild": "0.21.5",
     "puppeteer-core": "^25.16.0",
     "three": "file:vendor/deps/three-0.186.1.tgz",
     "urdf-loader": "file:vendor/deps/urdf-loader-0.13.1.tgz"
@@ -33,6 +34,9 @@
   "build": {
     "appId": "edu.vista.labstation",
     "productName": "VISTA Lab Station",
+    "directories": {
+      "output": "dist/phase6-candidate"
+    },
     "linux": {
       "icon": "icon.png",
       "target": [
@@ -40,17 +44,28 @@
         "deb"
       ],
       "category": "Education",
-      "maintainer": "VISTA Education"
+      "maintainer": "VISTA Education",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "icon.ico",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
     },
     "mac": {
-      "target": [
-        "dmg"
-      ]
+      "target": ["dmg"],
+      "icon": "icon.png",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
     },
     "files": [
       "main.js",
@@ -61,6 +76,8 @@
       "edge-supervisor.js",
       "device-provisioning.js",
       "session-security.js",
+      "recording-manager.js",
+      "policy-action-recorder.js",
       "package.json",
       "renderer/**/*",
       "!renderer/desktop-entry.js",
@@ -75,8 +92,14 @@
       "!.agents/**"
     ],
     "extraResources": [
-      { "from": "edge/dist/vista-edge-runtime", "to": "edge-runtime" },
-      { "from": "models/so101", "to": "models/so101" }
+      {
+        "from": "edge/dist/vista-edge-runtime",
+        "to": "edge-runtime"
+      },
+      {
+        "from": "models/so101",
+        "to": "models/so101"
+      }
     ]
   },
   "dependencies": {

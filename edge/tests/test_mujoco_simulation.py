@@ -2,8 +2,9 @@ import importlib.util
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from edge.mujoco_simulation import MuJoCoSimulation
+from edge.mujoco_simulation import JOINTS, MuJoCoSimulation
 
 
 @unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo extra is not installed")
@@ -25,6 +26,48 @@ class MuJoCoSimulationTests(unittest.TestCase):
         self.assertEqual(status["engine"], "MuJoCo")
         self.assertEqual(status["model"], "scene.xml")
         self.assertFalse(status["motionEnabled"])
+
+    def test_policy_observation_maps_virtual_camera_and_six_joint_state(self):
+        class Feature:
+            def __init__(self, shape): self.shape = shape
+        simulation = self.simulation
+        class Renderer:
+            def __init__(self, _model, *, height, width):
+                self.image = simulation.np.zeros((height, width, 3), dtype="uint8")
+                self.camera = None
+            def update_scene(self, _data, *, camera): self.camera = camera
+            def render(self): return self.image
+
+        rendered = []
+        renderer_factory = lambda model, **kwargs: Renderer(model, **kwargs)
+        with patch.dict("os.environ", {"MUJOCO_GL": "egl"}), patch.object(
+            self.simulation.mujoco, "Renderer", side_effect=renderer_factory
+        ):
+            observation = self.simulation.policy_observation({
+                "observation.state": Feature((6,)),
+                "observation.images.front": Feature((3, 64, 80)),
+            })
+            rendered.append(self.simulation._policy_renderers[(64, 80)])
+        self.assertEqual(len(observation["observation.state"]), 6)
+        self.assertEqual(observation["observation.images.front"].shape, (64, 80, 3))
+        self.assertEqual(observation["observation.images.front"].dtype.name, "uint8")
+        self.assertIsNotNone(rendered[0].camera)
+        self.assertEqual(tuple(float(value) for value in rendered[0].camera.lookat), (0.0, 0.0, 0.14))
+
+    def test_policy_action_is_bounds_checked_then_applied_to_mujoco_only(self):
+        frames = []
+        guarded = []
+        self.simulation.action_guard = lambda positions, limits, sink: (guarded.append((positions, limits)), sink())
+        result = self.simulation.execute_policy_action([0, -0.55, 1.05, -0.5, 0, -0.1], frames.append)
+        self.simulation.action_guard = None
+        self.assertEqual(result["engine"], "MuJoCo")
+        self.assertFalse(result["motionEnabled"])
+        self.assertGreater(len(frames), 0)
+        self.assertEqual(frames[-1]["controller_id"], "local-policy-mujoco")
+        self.assertTrue(guarded)
+        self.assertEqual(tuple(guarded[0][1]), JOINTS)
+        with self.assertRaisesRegex(ValueError, "outside MuJoCo actuator limits"):
+            self.simulation.execute_policy_action([999, 0, 0, 0, 0, 0])
 
     def test_executes_allowlisted_program_and_emits_measured_physics_frames(self):
         steps = [

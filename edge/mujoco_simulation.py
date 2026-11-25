@@ -27,6 +27,9 @@ class MuJoCoSimulation:
         self._joint_ids: dict[str, int] = {}
         self._actuator_ids: dict[str, int] = {}
         self._site_id = -1
+        self.action_guard: Callable[[list[float], dict[str, tuple[float, float]], Callable[[], None]], None] | None = None
+        self._policy_data = None
+        self._policy_renderers: dict[tuple[int, int], Any] = {}
         import threading
         self._run_lock = threading.Lock()
         self._cancelled = threading.Event()
@@ -52,6 +55,9 @@ class MuJoCoSimulation:
                 raise ValueError("MJCF must be a fixed-base six-joint SO-101 model.")
             self.mujoco, self.np, self.model = mujoco, np, model
             self._joint_ids, self._actuator_ids, self._site_id = joint_ids, actuator_ids, site_id
+            self._policy_data = mujoco.MjData(model)
+            mujoco.mj_resetData(model, self._policy_data)
+            mujoco.mj_forward(model, self._policy_data)
         except Exception as error:
             self.error = f"SO-101 MuJoCo model failed validation: {error}"
             self.model = None
@@ -81,6 +87,159 @@ class MuJoCoSimulation:
         if not self._run_lock.locked():
             raise RuntimeError("No MuJoCo simulation is running.")
         self._resume.set()
+
+    def policy_observation(self, input_features: dict[str, Any]) -> dict[str, Any]:
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("MuJoCo is executing another simulation; policy observation was not captured.")
+        try:
+            return self._capture_policy_observation(input_features)
+        finally:
+            self._run_lock.release()
+
+    def _capture_policy_observation(self, input_features: dict[str, Any]) -> dict[str, Any]:
+        """Capture the fixed-base MuJoCo state and declared virtual camera views."""
+        if not self.available or self._policy_data is None:
+            raise RuntimeError("MuJoCo simulation is unavailable for policy observations.")
+        observation: dict[str, Any] = {}
+        for key, feature in input_features.items():
+            shape = tuple(feature.shape)
+            if key == "observation.state":
+                if shape != (6,): raise ValueError("Policy state input must have six SO-101 joint values.")
+                observation[key] = [float(self._policy_data.qpos[self.model.jnt_qposadr[self._joint_ids[name]]]) for name in JOINTS]
+            elif key.startswith("observation.images."):
+                if len(shape) != 3 or shape[0] != 3: raise ValueError(f"Visual input {key} must use CHW RGB shape.")
+                if key not in {"observation.images.top", "observation.images.front", "observation.images.right", "observation.images.wrist"}:
+                    raise ValueError(f"No calibrated MuJoCo camera is mapped to {key}.")
+                if os.environ.get("MUJOCO_GL") not in {"egl", "osmesa"}:
+                    raise RuntimeError("Headless policy camera requires MUJOCO_GL=egl or osmesa.")
+                height, width = shape[1], shape[2]
+                render_key = (height, width)
+                renderer = self._policy_renderers.get(render_key)
+                if renderer is None:
+                    renderer = self.mujoco.Renderer(self.model, height=height, width=width)
+                    self._policy_renderers[render_key] = renderer
+                camera = self.mujoco.MjvCamera()
+                self.mujoco.mjv_defaultCamera(camera)
+                camera.type = self.mujoco.mjtCamera.mjCAMERA_FREE
+                camera.lookat[:] = (0.0, 0.0, 0.14)
+                camera.distance = 1.05
+                if key.endswith("top"):
+                    camera.azimuth, camera.elevation = 90, -72
+                elif key.endswith("right") or key.endswith("wrist"):
+                    camera.azimuth, camera.elevation = 180, -20
+                else:
+                    camera.azimuth, camera.elevation = 135, -25
+                renderer.update_scene(self._policy_data, camera=camera)
+                observation[key] = renderer.render()
+            else:
+                raise ValueError(f"Unsupported observation feature {key!r}.")
+        observation["_vista_joint_limits_rad"] = {
+            name: [float(value) for value in self.model.actuator_ctrlrange[self._actuator_ids[name]]]
+            for name in JOINTS
+        }
+        return observation
+
+    def execute_policy_action(self, positions: Any, emit: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+        if not self.available or self._policy_data is None:
+            raise RuntimeError("MuJoCo simulation is unavailable.")
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("MuJoCo is already running another simulation.")
+        try:
+            if not isinstance(positions, (list, tuple)) or len(positions) != 6:
+                raise ValueError("Policy output must contain exactly six ordered SO-101 joint targets.")
+            targets = []
+            for name, value in zip(JOINTS, positions, strict=True):
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                    raise ValueError(f"Policy output for {name} must be finite numeric radians.")
+                actuator = self._actuator_ids[name]
+                low, high = self.model.actuator_ctrlrange[actuator]
+                if not float(low) <= float(value) <= float(high):
+                    raise ValueError(f"Policy output for {name} is outside MuJoCo actuator limits [{low:.4f}, {high:.4f}] radians.")
+                targets.append(float(value))
+            if self.action_guard is None:
+                raise PermissionError("LocalSafetyController action guard is required for policy joint targets.")
+            frames = []
+            def publish(progress: float, label: str) -> None:
+                data = self._policy_data
+                frame = {"schema_version": 1, "robot_id": "local-so101-simulation", "source_mode": "SIMULATION",
+                         "controller_id": "local-policy-mujoco", "sequence": len(frames) + 1,
+                         "measured_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{int(time.time_ns() % 1_000_000_000 / 1_000_000):03d}Z",
+                         "connection": "connected", "calibration_status": "NOT_APPLICABLE",
+                         "measured": [{"name": name, "position": float(data.qpos[self.model.jnt_qposadr[self._joint_ids[name]]]), "unit": "rad"} for name in JOINTS],
+                         "calibrated": None, "commanded": [{"name": name, "position": value, "unit": "rad"} for name, value in zip(JOINTS, targets, strict=True)],
+                         "progress": round(progress, 4), "step": label,
+                         "end_effector_m": data.site_xpos[self._site_id].tolist(), "latency_ms": 0}
+                frames.append(frame)
+                if emit: emit(frame)
+            self._cancelled.clear(); self._resume.set()
+            self._move(self._policy_data, targets, duration=0.1, emit=publish, progress_base=0.0, progress_span=1.0, label="Policy action")
+            publish(1.0, "Policy action complete")
+            return {"ok": True, "mode": "SIMULATION", "engine": "MuJoCo", "final": frames[-1], "motionEnabled": False}
+        finally:
+            self._run_lock.release()
+
+    def current_joint_positions(self) -> list[float]:
+        if not self.available or self._policy_data is None:
+            raise RuntimeError("MuJoCo simulation is unavailable.")
+        return [float(self._policy_data.qpos[self.model.jnt_qposadr[self._joint_ids[name]]]) for name in JOINTS]
+
+    def predict_end_effector(self, positions: Any) -> list[float]:
+        """Evaluate a joint vector in the packaged MuJoCo frame without changing simulation state."""
+        if not self.available:
+            raise RuntimeError("MuJoCo simulation is unavailable.")
+        if not isinstance(positions, (list, tuple)) or len(positions) != len(JOINTS):
+            raise ValueError("Prediction requires all six ordered SO-101 joints.")
+        data = self.mujoco.MjData(self.model)
+        for name, value in zip(JOINTS, positions, strict=True):
+            if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(float(value)):
+                raise ValueError(f"Prediction for {name} must be finite radians.")
+            data.qpos[self.model.jnt_qposadr[self._joint_ids[name]]] = float(value)
+        self.mujoco.mj_forward(self.model, data)
+        return [float(value) for value in data.site_xpos[self._site_id]]
+
+    def execute_joint_targets(self, positions: Any, emit: Callable[[dict[str, Any]], None] | None = None,
+                              duration_seconds: float = 0.35) -> dict[str, Any]:
+        """Apply one manual joint target to the local simulator through action_guard."""
+        if not self.available or self._policy_data is None:
+            raise RuntimeError("MuJoCo simulation is unavailable.")
+        if self.action_guard is None:
+            raise PermissionError("LocalSafetyController action guard is required for manual joint targets.")
+        if isinstance(duration_seconds, bool) or not isinstance(duration_seconds, (float, int)) or not math.isfinite(float(duration_seconds)) or not 0.05 <= duration_seconds <= 5.0:
+            raise ValueError("Manual target duration must be between 0.05 and 5 seconds.")
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("MuJoCo is already running another simulation.")
+        try:
+            if not isinstance(positions, (list, tuple)) or len(positions) != len(JOINTS):
+                raise ValueError("Manual target must contain all six ordered SO-101 joints.")
+            targets = []
+            for name, value in zip(JOINTS, positions, strict=True):
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                    raise ValueError(f"Manual target for {name} must be finite radians.")
+                actuator = self._actuator_ids[name]
+                low, high = self.model.actuator_ctrlrange[actuator]
+                if not float(low) <= float(value) <= float(high):
+                    raise ValueError(f"Manual target for {name} is outside MuJoCo actuator limits.")
+                targets.append(float(value))
+            frames = []
+            def publish(progress: float, label: str) -> None:
+                data = self._policy_data
+                frame = {"schema_version": 1, "robot_id": "local-so101-simulation", "source_mode": "SIMULATION",
+                         "controller_id": "local-manual-mujoco", "sequence": len(frames) + 1,
+                         "measured_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{int(time.time_ns() % 1_000_000_000 / 1_000_000):03d}Z",
+                         "connection": "connected", "calibration_status": "NOT_APPLICABLE",
+                         "measured": [{"name": name, "position": float(data.qpos[self.model.jnt_qposadr[self._joint_ids[name]]]), "unit": "rad"} for name in JOINTS],
+                         "calibrated": None, "commanded": [{"name": name, "position": value, "unit": "rad"} for name, value in zip(JOINTS, targets, strict=True)],
+                         "progress": round(progress, 4), "step": label,
+                         "end_effector_m": data.site_xpos[self._site_id].tolist(), "latency_ms": 0}
+                frames.append(frame)
+                if emit: emit(frame)
+            self._cancelled.clear(); self._resume.set()
+            self._move(self._policy_data, targets, duration=float(duration_seconds), emit=publish, progress_base=0.0,
+                       progress_span=1.0, label="Manual joint target")
+            publish(1.0, "Manual target complete")
+            return {"ok": True, "mode": "SIMULATION", "engine": "MuJoCo", "final": frames[-1], "motionEnabled": False}
+        finally:
+            self._run_lock.release()
 
     def execute(self, command: Any, authorization: Any, attempt: Any, confirmation: Any,
                 emit: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
@@ -248,7 +407,16 @@ class MuJoCoSimulation:
             low, high = model.actuator_ctrlrange[actuator_id]
             if not math.isfinite(float(target)) or target < low - 1e-6 or target > high + 1e-6:
                 raise ValueError(f"Target for {name} exceeds the MuJoCo actuator limits.")
-            data.ctrl[actuator_id] = min(float(high), max(float(low), float(target)))
+        def write_targets() -> None:
+            for name, target in zip(JOINTS, targets):
+                actuator_id = self._actuator_ids[name]
+                low, high = model.actuator_ctrlrange[actuator_id]
+                data.ctrl[actuator_id] = min(float(high), max(float(low), float(target)))
+        if self.action_guard:
+            verified_limits = {name: tuple(float(value) for value in model.actuator_ctrlrange[self._actuator_ids[name]]) for name in JOINTS}
+            self.action_guard([float(target) for target in targets], verified_limits, write_targets)
+        else:
+            write_targets()
         for i in range(steps):
             self._checkpoint()
             mujoco.mj_step(model, data)

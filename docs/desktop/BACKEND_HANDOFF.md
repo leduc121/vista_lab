@@ -62,3 +62,31 @@ enrollment is integrated, but it is not an AWS certificate or MQTT credential.
 The inspected backend lacks the student-authenticated MuJoCo telemetry bridge.
 CHECKIK reuse notes are in
 `CHECKIK_REUSE.md`.
+
+## Recheck against current Web/API sprint source — 2026-11-20
+
+The read-only checkout `/home/quangduc/Code/vista/se-sprint-90` is at
+`f42ca25cf1ead5460c53c1d8c357252474203a63`. Its current controllers confirm
+the device routes listed above, the student attempt-bound viewer scope route
+`POST /api/v1/me/attempts/:attemptId/digital-twin/viewer-scope`, and `WS
+/ws/twin`. The Twin service echoes the offered `vista.twin.<scope>` subprotocol.
+The actual controller and source contract were inspected; the local Education
+API itself was not running during this Desktop continuation.
+
+No authenticated Desktop telemetry-ingestion route is present in the current
+Education API source. The only Education API client posting
+`/internal/simulation-telemetry` is the trusted server-side
+`DigitalTwinTelemetryClient`; it is used by the API's physical-execution flow.
+The Twin server rejects unsigned or wrong-audience publisher scopes. Desktop
+must not use this internal route. The backend must add and document an
+authenticated student/attempt-bound ingestion or server-managed experiment
+contract before locally generated MuJoCo frames can reach an authorized Twin
+session.
+
+The local browser verification used a short-lived test HMAC scope and a
+test-only signed publisher against the real loopback Twin process. It verified
+the WebSocket subprotocol, six-joint display and attempt revocation, but it did
+not test Education API-issued student scopes. The local Supabase GoTrue health
+endpoint was available; the Education API was not listening on its documented
+local port. The one-time School Admin enrollment code therefore could not be
+obtained through the real local provisioning contract in this run.

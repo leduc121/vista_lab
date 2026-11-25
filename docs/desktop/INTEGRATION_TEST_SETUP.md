@@ -1,15 +1,36 @@
 # Isolated Desktop integration test setup
 
+## One-command host acceptance
+
+From the Desktop repository root on the Ubuntu host (not from the network-restricted IDE sandbox), run:
+
+```sh
+scripts/run-isolated-lms-e2e.sh
+```
+
+The executable runner allocates a unique Compose project and verified unused loopback ports, starts only a tmpfs PostgreSQL 17 container and pinned GoTrue `v2.197.0`, bootstraps the checked-in backend baseline/migrations, uses the backend's guarded Phase 2.4.3 fixture seeder, builds the API in a temporary copy of the read-only backend source, starts the local API and gateway, and runs Desktop `npm run test:integration` with mutations against disposable test records. It removes only its own containers/network after the run and stores mode-0700 logs under `/tmp/vista-lms-<run-id>-evidence`. The Compose network is marked internal and image pulls are disabled; both `postgres:17` and `public.ecr.aws/supabase/gotrue:v2.197.0` must already be cached locally. Thus it makes no registry, AWS, Production, shared-Supabase, or physical-hardware connection. It requires Docker Compose v2, Python 3, Node/npm, PostgreSQL client tools, curl, OpenSSL, tar, and at least 3 GiB available RAM.
+
+Offline runner validation (no Docker service changes or network calls):
+
+```sh
+bash -n scripts/run-isolated-lms-e2e.sh
+scripts/run-isolated-lms-e2e.sh --self-test
+```
+
+This runner performs API-level end-to-end acceptance. It does not launch Electron or the Web LMS browser; browser UI acceptance remains a separate test. It must complete successfully on the host before any real LMS E2E PASS is reported.
+
 No isolated Education API/Supabase endpoint or test account was supplied for this Phase 4 run. The harness uses disposable local/staging accounts, runs reads by default, and refuses the known Production API host. Supply only test credentials through the process environment; never commit `.env` files or put credentials in installer configuration.
 
 ## Prerequisites
 
-1. Use the latest backend sprint checkout for contracts and fixtures. **Do not run the shared `scripts/local_integration_stack.sh up` while Claude's backend processes/worktree are active:** it kills matching API processes, removes fixed-name containers, and rebuilds backend output. Request a uniquely named isolated variant from the backend owner. Its guarded database bootstrap must pass the pinned schema fingerprint before seeding; Queue 2 observed a fingerprint mismatch (see `CLAUDE_BACKEND_HANDOFF.md`).
-2. The stack script does not start GoTrue. Follow the local-only GoTrue + loopback reverse-proxy procedure in the backend `docs/operations/student-temp-password.md` (“Real-integration test harness (local only)”, GoTrue `v2.197.0`). Do not use hosted/Production Supabase or service-role credentials in Desktop environment variables.
-3. Seed test-owned student/classroom/assignment/attempt/robot/entitlement data using the backend’s local E2E fixture procedure. Create two schools and separate students. For the temporary-password suite, provision a fresh student whose login response sets `password_change_required`; the test changes that account permanently, so create a new disposable student for each run.
+1. Use the latest backend sprint checkout for contracts and fixtures. **Do not run the shared `scripts/local_integration_stack.sh up` while Claude's backend processes/worktree are active:** it kills matching API processes, removes fixed-name containers, and rebuilds backend output. The student auth harness also performs teardown before `up`, kills fixed-port/process matches, and removes a fixed `/tmp` path. Neither is safe for shared host use without a namespaced, non-destructive variant. Its guarded database bootstrap must pass the pinned schema fingerprint before seeding; Queue 2 observed a fingerprint mismatch (see `CLAUDE_BACKEND_HANDOFF.md`).
+2. The stack script does not start GoTrue. Follow the local-only GoTrue + loopback reverse-proxy procedure in the backend `docs/operations/student-temp-password.md` (“Real-integration test harness (local only)”, GoTrue `v2.197.0`). For integration mutations, GoTrue and Education API must use the same disposable database. Do not point GoTrue at shared local Supabase: student login creates provider session state. Do not use hosted/Production Supabase or service-role credentials in Desktop environment variables.
+3. Seed test-owned student/classroom/assignment/attempt/robot/entitlement data using the backend’s local E2E fixture procedure. Create two schools and separate students. For the temporary-password suite, provision a fresh student whose login response sets `password_change_required`; the test changes that account permanently, so create a new disposable student for each run. Use a unique run ID for DB/container/network names, a verified unused loopback port, and tmpfs for the disposable DB. Cleanup only resources carrying that run ID.
 4. Start the Digital Twin test service on loopback and seed a simulation frame for the authorized attempt. Use `ws://127.0.0.1:8767/ws/twin`. Set `VISTA_TEST_ENABLE_TWIN=1` only after the attempt is allocated to and entitled for the test robot.
 
-The script checks login, invalid password/wrong school, Supabase refresh and logout, `/me`, `/me/learning`, and cross-school attempt denial. Optional suites cover a fresh temporary-password account and change, Blockly save/reload/validation/version/submission locking, authorized schematic lifecycle, attempt-bound Twin scope, cross-school scope denial, and a real WebSocket connection. An optional `VISTA_TEST_EXPIRED_ACCESS_TOKEN` checks rejection of an actual expired test token. Each mutation requires isolated test-owned accounts and resources. Immediate Twin revocation, stale-frame handling, and Desktop UI retry still require a live browser/Electron scenario with controlled test services; the HTTP harness alone cannot establish them.
+The script checks login, invalid password/wrong school, Supabase refresh and logout, `/me`, `/me/learning`, `/me/enrollments`, `/me/learning-path`, and cross-school attempt denial. With mutations enabled it creates or resumes an attempt, saves/reloads Blockly, validates and versions the program, submits it, verifies the final attempt and confirms the same `attempt_id`/status through `/me/learning` (the projection read by Web LMS), then checks foreign-student denial. Optional suites cover a fresh temporary-password account and change, authorized schematic lifecycle with persisted result, attempt-bound Twin scope, cross-school scope denial, and a real WebSocket connection. An optional `VISTA_TEST_EXPIRED_ACCESS_TOKEN` checks rejection of an actual expired test token. Each mutation requires isolated test-owned accounts and resources.
+
+These are **API-level tests**, not browser UI E2E: they prove the API/GoTrue persistence and Web LMS read projection but do not operate Electron or render the Web LMS. For separate UI acceptance, point both Electron and Web LMS at the same isolated API/GoTrue stack and log in with the same disposable student; exercise My Labs → assignment → Blockly save/version → simulation/result → submit, then reload the Web LMS student's learning page and confirm the same attempt/status/result. Record this browser run separately. Immediate Twin revocation, stale-frame handling, and Desktop UI retry likewise require a live browser/Electron scenario with controlled test services; the HTTP harness alone cannot establish them.
 
 ## Run
 

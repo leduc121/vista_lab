@@ -56,6 +56,26 @@ function toUrdfRadians(name, reading) {
   return Number.isFinite(value) && value >= JOINTS[name].lower && value <= JOINTS[name].upper ? value : null;
 }
 
+export function frameJointTargets(frame, now = Date.now()) {
+  if (!frame || frame.connection !== 'connected') return {};
+  // Physical measurements are useful for diagnostics, but the handoff requires
+  // an uncalibrated physical pose to remain frozen in the model.
+  if (frame.source_mode === 'LIVE_PHYSICAL' && frame.calibration_status !== 'VERIFIED') return {};
+  const measuredAt = Date.parse(frame.measured_at);
+  if (!Number.isFinite(measuredAt) || now - measuredAt > 5000) return {};
+  const readings = frame.source_mode === 'LIVE_PHYSICAL'
+    ? (frame.calibration_status === 'VERIFIED' ? frame.calibrated : frame.measured)
+    : frame.measured;
+  if (!Array.isArray(readings)) return {};
+  const targets = {};
+  for (const name of JOINT_NAMES) {
+    const reading = readings.find((entry) => entry.name === name);
+    const value = reading && toUrdfRadians(name, reading);
+    if (value !== null && value !== undefined) targets[name] = value;
+  }
+  return targets;
+}
+
 function toArrayBuffer(value) {
   if (value instanceof ArrayBuffer) return value;
   if (value?.data) return Uint8Array.from(value.data).buffer;
@@ -77,7 +97,7 @@ async function readMesh(filename) {
   return response.arrayBuffer();
 }
 
-export async function mountTwinViewer(host) {
+export async function mountTwinViewer(host, onDisposeReady = () => {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#111718');
   const camera = new THREE.PerspectiveCamera(42, 1, 0.005, 100);
@@ -110,7 +130,7 @@ export async function mountTwinViewer(host) {
   scene.add(axes);
 
   let disposed = false;
-  let latest = null;
+  let released = false;
   let robot = null;
   let targets = {};
   const meshCache = new Map();
@@ -128,7 +148,7 @@ export async function mountTwinViewer(host) {
     const cacheKey = `${filename}:${material.name}`;
     if (meshCache.has(cacheKey)) { done(meshCache.get(cacheKey).clone()); manager.itemEnd(uri); return; }
     void readMesh(filename).then((bytes) => {
-      if (disposed) return;
+      if (disposed) { manager.itemEnd(uri); return; }
       const geometry = new STLLoader(manager).parse(toArrayBuffer(bytes));
       const displayMaterial = new THREE.MeshStandardMaterial({
         color: material.name === '3d_printed' ? '#f2f2ed' : '#34383a',
@@ -149,24 +169,22 @@ export async function mountTwinViewer(host) {
     camera.updateProjectionMatrix();
     renderer.setSize(width, height);
   });
+  const release = () => {
+    if (released) return;
+    released = true;
+    disposed = true;
+    resize.disconnect();
+    controls.dispose();
+    renderer.setAnimationLoop(null);
+    renderer.dispose();
+    meshCache.forEach((mesh) => { mesh.geometry.dispose(); mesh.material.dispose(); });
+    scene.clear();
+    host.replaceChildren();
+  };
   resize.observe(host);
   let lastFrameTime = performance.now();
   renderer.setAnimationLoop((now) => {
-    const frame = latest;
     if (robot) {
-      if (frame) {
-        const readings = frame.source_mode === 'LIVE_PHYSICAL'
-          ? (frame.calibration_status === 'VERIFIED' ? frame.calibrated : null)
-          : frame.measured;
-        if (readings) {
-          for (const name of JOINT_NAMES) {
-            const reading = readings.find((entry) => entry.name === name);
-            const value = reading && toUrdfRadians(name, reading);
-            const joint = robot.joints[JOINTS[name].urdf];
-            if (joint && value !== null && value !== undefined) targets[name] = value;
-          }
-        }
-      }
       const elapsed = Math.min(50, now - lastFrameTime);
       for (const name of JOINT_NAMES) {
         const joint = robot.joints[JOINTS[name].urdf];
@@ -179,10 +197,12 @@ export async function mountTwinViewer(host) {
     controls.update();
     renderer.render(scene, camera);
   });
+  onDisposeReady(release);
 
   try {
+    if (disposed) return { setFrame() {}, resetCamera() {}, dispose: release };
     const urdf = await readUrdf();
-    if (disposed) return { setFrame() {}, dispose() {} };
+    if (disposed) return { setFrame() {}, resetCamera() {}, dispose: release };
     robot = loader.parse(urdf);
     robot.name = 'VISTA SO-101 URDF';
     for (const [name, specification] of Object.entries(JOINTS)) {
@@ -195,48 +215,23 @@ export async function mountTwinViewer(host) {
     scene.add(robot);
     await meshLoading;
   } catch (error) {
-    renderer.setAnimationLoop(null);
-    resize.disconnect();
-    controls.dispose();
-    renderer.dispose();
-    host.replaceChildren();
+    release();
     throw error;
   }
 
   const setFrame = (frame) => {
-    latest = frame;
-    if (!frame) {
-      targets = Object.fromEntries(JOINT_NAMES.map((name) => [name, 0]));
-      return;
-    }
-    const readings = frame?.source_mode === 'LIVE_PHYSICAL'
-      ? (frame.calibration_status === 'VERIFIED' ? frame.calibrated : frame.measured)
-      : frame?.measured;
-    if (readings) {
-      targets = {};
-      for (const name of JOINT_NAMES) {
-        const reading = readings.find((entry) => entry.name === name);
-        const value = reading && toUrdfRadians(name, reading);
-        if (value !== null && value !== undefined) targets[name] = value;
-      }
-    }
+    // Freeze at the last displayed pose on stale/disconnected telemetry.
+    // A read-only viewer must not animate home after its data source is lost.
+    targets = frameJointTargets(frame);
   };
   return {
     setFrame,
     resetCamera() {
+      if (disposed) return;
       camera.position.copy(initialCamera);
       controls.target.copy(initialTarget);
       controls.update();
     },
-    dispose() {
-      disposed = true;
-      resize.disconnect();
-      controls.dispose();
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      meshCache.forEach((mesh) => { mesh.geometry.dispose(); mesh.material.dispose(); });
-      scene.clear();
-      host.replaceChildren();
-    }
+    dispose: release
   };
 }

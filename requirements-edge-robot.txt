@@ -1,0 +1,4 @@
+# Optional physical SO-101 adapter environment. Keep separate from the default
+# packaged Edge Runtime; the default continues to fail closed with hardware off.
+# LeRobot 0.6.1 public SO101Leader/SO101Follower APIs are the adapter target.
+lerobot[feetech]==0.6.1
