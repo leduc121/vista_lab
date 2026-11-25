@@ -33,9 +33,6 @@ jobs:
           - id: macos-arm64
             os: macos-15
             target: --mac dmg --arm64
-          - id: macos-x64
-            os: macos-15-intel
-            target: --mac dmg --x64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Validate source SHA
@@ -66,7 +63,8 @@ jobs:
           python-version: '3.11'
 
       - run: python -m pip install -r requirements-edge.txt
-      - run: python -m pip inspect --local > release-python-inspect.json
+      - name: Capture build Python inventory
+        run: python -X utf8 -m pip inspect --local > release-python-inspect.json
       - run: python -m unittest discover -s edge/tests -v
       - run: npm ci
       - run: npm test
@@ -75,6 +73,15 @@ jobs:
       - run: npm run build:renderer
       - run: npx electron-builder ${{ matrix.target }} --publish never
 
+      - name: Scan native package contents into CycloneDX
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: dist/phase6-candidate
+          format: cyclonedx-json
+          output-file: release-binary-sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Stage platform artifact and runtime SBOM
         shell: bash
         run: |
@@ -82,6 +89,8 @@ jobs:
           stage="release-stage/${PLATFORM_ID}"
           mkdir -p "$stage"
           python release-tools/scripts/stage-native-release.py dist/phase6-candidate "$stage" release-python-inspect.json "${PLATFORM_ID}"
+          cp release-binary-sbom.cdx.json "$stage/${PLATFORM_ID}-binary-sbom.cdx.json"
+          python release-tools/scripts/collect-third-party-licenses.py "$stage/${PLATFORM_ID}-THIRD_PARTY_LICENSES.zip"
           printf '%s\n' "$SOURCE_SHA" > "$stage/source-sha.txt"
           printf '%s\n' "$PLATFORM_ID" > "$stage/platform-architecture.txt"
           find "$stage" -maxdepth 1 -type f -print
@@ -139,12 +148,11 @@ jobs:
           [[ $(find release-assets/final -maxdepth 1 -type f -name '*.deb' | wc -l) -eq 1 ]]
           [[ $(find release-assets/final -maxdepth 1 -type f -name '*.AppImage' | wc -l) -eq 1 ]]
           [[ $(find release-assets/final -maxdepth 1 -type f -name '*arm64*.dmg' | wc -l) -eq 1 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*x64*.dmg' | wc -l) -eq 1 ]]
           cp release-metadata/docs/desktop/DESKTOP_DISTRIBUTION_SBOM.cdx.json release-assets/final/SOURCE-INPUT-SBOM.cdx.json
           cp release-metadata/docs/desktop/THIRD_PARTY_NOTICES.md release-assets/final/THIRD_PARTY_NOTICES.md
           cp release-metadata/docs/desktop/RELEASE_NOTES_0.1.0.md release-assets/final/RELEASE_NOTES_0.1.0.md
           printf 'source_sha=%s\nworkflow_run_id=%s\nworkflow_run_url=%s\n' "$SOURCE_SHA" "$RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > release-assets/final/BUILD_PROVENANCE.txt
-          (cd release-assets/final && sha256sum -- *.exe *.deb *.AppImage *.dmg *.cdx.json THIRD_PARTY_NOTICES.md RELEASE_NOTES_0.1.0.md BUILD_PROVENANCE.txt > SHA256SUMS)
+          (cd release-assets/final && sha256sum -- *.exe *.deb *.AppImage *.dmg *.cdx.json *-THIRD_PARTY_LICENSES.zip THIRD_PARTY_NOTICES.md RELEASE_NOTES_0.1.0.md BUILD_PROVENANCE.txt > SHA256SUMS)
           (cd release-assets/final && sha256sum -c SHA256SUMS)
 
       - name: Create Draft Release only

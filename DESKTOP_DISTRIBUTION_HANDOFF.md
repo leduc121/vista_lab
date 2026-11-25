@@ -4,15 +4,15 @@
 
 ## Release summary and platform matrix
 
-| Platform / architecture | Requested artifact | Candidate filename | SHA-256 (CI build manifest from run `45564467771`) | Download status |
+| Platform / architecture | Requested artifact | Candidate filename | SHA-256 (payload, candidate run `45570937327`) | Download status |
 | --- | --- | --- | --- | --- |
-| Windows x64 | NSIS `.exe` | `VISTA Lab Station-0.1.0-x64-setup.exe` | `47f1f1cdb6df911f8b11159990d1c15c0526b70666e8914a2300c4bae3b7b5fb` | Actions artifact from run `45564467771`; public Release URL pending. |
-| Ubuntu/Debian amd64 | `.deb` | `VISTA Lab Station-0.1.0-amd64.deb` | `17cc236d082620da05ea8d3148a5a029387b4e35e6d0844010afad1c1b067d15` | Actions artifact from run `45564467771`; public Release URL pending. |
-| Linux x86_64 | AppImage | `VISTA Lab Station-0.1.0-x86_64.AppImage` | `3987709605965b50ff56de01bf2719c603da26d32cc4959c09dc1cf536fd6960` | Actions artifact from run `45564467771`; public Release URL pending. |
-| macOS Intel x64 | `.dmg` | Expected from builder: `VISTA Lab Station-0.1.0-x64.dmg` | **Pending** | New draft workflow uses GitHub runner `macos-15-intel`; no artifact is verified yet. |
-| macOS Apple Silicon arm64 | `.dmg` | `VISTA Lab Station-0.1.0-arm64.dmg` | `dd100c8123159aa34fcef66168184c248e4dae6a6fe52f6f0e37f5d129216ef6` | Actions artifact from run `45564467771`; public Release URL pending. |
+| Windows x64 | NSIS `.exe` | `VISTA Lab Station-0.1.0-x64-setup.exe` | `e000451b224349ad2f74251952007c227cf3e36adcf6e506abc8c662d52f0412` | Candidate from same-source run `45570937327`; payload SHA recomputed locally; GitHub artifact archive digest matched. No Draft asset URL yet. |
+| Ubuntu/Debian amd64 | `.deb` | `VISTA Lab Station-0.1.0-amd64.deb` | `287feaec78fade1b922409bb5f23a956fa3007468e8075dd15d59f22f0a090db` | Candidate from same-source run `45570937327`; payload SHA recomputed locally; installed/inspected in Ubuntu 24.04 container. No Draft asset URL yet. |
+| Linux x86_64 | AppImage | `VISTA Lab Station-0.1.0-x86_64.AppImage` | `57f20261b908297917e7fc94d2096bb7704adce74a347cd0336d4ab26ea4e5ac` | Candidate from same-source run `45570937327`; payload SHA recomputed locally; launched under Xvfb in Ubuntu 24.04 container. No Draft asset URL yet. |
+| macOS Intel x64 | `.dmg` | — | **Not supported in this release** | `mujoco==3.17.0` has no CPython 3.11 Intel macOS wheel; native build attempted source compilation and failed because `MUJOCO_PATH` was unavailable. No Intel artifact will be included. |
+| macOS Apple Silicon arm64 | `.dmg` | `VISTA Lab Station-0.1.0-arm64.dmg` | `a92dff1e4821767845f768278e510b309f608933508360539198b5694ba9daf8` | Candidate from same-source run `45570937327`; payload SHA recomputed locally; GitHub artifact archive digest matched. No Draft asset URL yet. |
 
-The SHA values above were read from each artifact's `SHA256SUMS`; embedded provenance records source SHA `80aef01eca657fa8a2dbe3340bac27e048619b11` and workflow run `45564467771`. They are CI-generated installer hashes, not yet recomputed from full local installer downloads. The tracked `releases/v0.1.0/` contains older filenames and hashes; its manifest is not evidence for the merge SHA. `scripts/validate-download-release.cjs` only verifies internal consistency of that old local stage. Those files do not match the current builder's expected output names, and their Linux hashes differ from files in ignored `dist/`. Do not publish or combine any of these files with CI outputs. Generate final SHA values and `SHA256SUMS` only from the exact verified CI artifacts downloaded from one Actions run at the merge SHA.
+These are **candidate** payload SHA-256 values, recomputed from locally downloaded installers from workflow run `45570937327`. All three downloaded GitHub artifact ZIP SHA-256 digests also matched the Actions API `digest`; each embedded `source-sha.txt` is `80aef01eca657fa8a2dbe3340bac27e048619b11`, and the platform markers match Windows x64, Ubuntu x64 and macOS arm64. This workflow was dispatched from the unmerged fix branch with Draft creation disabled, so the files are not final Release assets. Do not mix them with run `45564467771` or another run. The tracked `releases/v0.1.0/` contains older filenames and hashes; it is not evidence for this source SHA. The merged-main Draft workflow must produce one new complete run, after PR #4 is merged, and its final `SHA256SUMS`/payload hashes must be recomputed and recorded separately.
 
 ### Versioned download URL plan
 
@@ -26,15 +26,15 @@ Do not use this pattern as a live link until the asset is uploaded and fetched b
 
 ## CI and release integrity
 
-- **Package source SHA:** `80aef01eca657fa8a2dbe3340bac27e048619b11`. GitHub API query returned no Actions run for that SHA. The release/tag APIs returned 404 for `v0.1.0`; there is no published release or tag to reuse.
+- **Package source SHA:** `80aef01eca657fa8a2dbe3340bac27e048619b11`. Candidate run `45570937327` on the authorized fix branch used this exact input SHA. The `main`-branch Draft run is pending PR #4 merge. No public v0.1.0 URL is verified.
 - The existing `.github/workflows/native-build.yml` supports Windows x64 NSIS, Linux x64 DEB + AppImage, and macOS arm64 DMG. It now accepts an explicit source SHA, records it into each artifact, and forces `--publish never`; it does not include Intel macOS or Release creation.
-- New `.github/workflows/desktop-release-draft.yml` runs all four native platform jobs from one required source SHA, adds macOS Intel using `macos-15-intel`, tags each artifact with its source SHA/platform, gathers artifacts from the same workflow run, generates `SHA256SUMS`, and creates only a **Draft** when manually dispatched with `create_draft=true`. It never publishes. Draft creation fails if a platform artifact is missing, provenance differs, or a `v0.1.0` release/tag conflicts with the requested source commit.
-- Each native job attaches a CycloneDX inventory of its pip build environment. The release also attaches the source-input SBOM and notices. These are transparent inventories, not yet proof of the exact binary dependency closure or clean-machine acceptance; do not publish until that reconciliation and acceptance evidence are recorded.
-- The branch workflow itself must be merged into `main` before GitHub will offer the new workflow for dispatch. Then dispatch **Desktop release draft** with `source_sha=80aef01eca657fa8a2dbe3340bac27e048619b11`, `create_draft=true`. A failed runner blocks the collector and draft creation.
+- New `.github/workflows/desktop-release-draft.yml` runs Windows x64, Linux x64 and macOS arm64 native platform jobs from one required source SHA, tags each artifact with its source SHA/platform, gathers artifacts from the same workflow run, generates `SHA256SUMS`, and creates only a **Draft** when manually dispatched with `create_draft=true`. It never publishes. Draft creation fails if a required artifact is missing, provenance differs, or a `v0.1.0` release/tag conflicts with the requested source commit. Windows Python inventory capture uses UTF-8 mode to avoid Windows console encoding failures.
+- PR #4 adds three kinds of per-platform evidence to the corrected workflow: Syft CycloneDX scan of `dist/phase6-candidate`, pip-inspect SBOM with resolved `Requires-Dist` edges, and a ZIP of available license/notice texts from `node_modules`, Python site-packages and packaged output. The Draft also carries the source-input SBOM and consolidated notices. This workflow update has not yet run; review the scan's component coverage and NOASSERTION findings before treating binary closure or notices as complete.
+- PR #4 must be merged before the corrected workflow is available on `main`. Then dispatch **Desktop release draft** on `main` with `source_sha=80aef01eca657fa8a2dbe3340bac27e048619b11`, `create_draft=true`. A failed runner blocks the collector and draft creation.
 
 ### Draft release procedure
 
-After the branch PR is merged: repository `leduc121/vista_lab` → **Actions** → **Desktop release draft** → **Run workflow**. Enter the exact `source_sha` above and keep `create_draft` enabled. Wait for all four platform jobs and the `draft-release` job to succeed. Verify Draft assets against `SHA256SUMS`, fetch them back for another digest check, and complete artifact-level notices and target-machine acceptance before asking the owner to publish. Do not use files from `dist/` or `releases/v0.1.0/`.
+After PR #4 is merged: repository `leduc121/vista_lab` → **Actions** → **Desktop release draft** → **Run workflow**. Enter the exact `source_sha` above and keep `create_draft` enabled. Wait for the Windows x64, Linux x64, macOS arm64 and `draft-release` jobs to succeed. Verify Draft assets against `SHA256SUMS` and fetch them back for another digest check. Do not use files from `dist/`, `releases/v0.1.0/` or candidate run `45570937327` as Draft assets.
 
 ## Source and dependency distribution rights
 
@@ -53,14 +53,14 @@ CI-generated SHA256 values are recorded above for exact-SHA artifacts. No public
 set -eu
 file='VISTA Lab Station-0.1.0-amd64.deb'
 url='<PENDING: exact URL appears only after the v0.1.0 Draft is approved and published>' # not a live URL
-expected='17cc236d082620da05ea8d3148a5a029387b4e35e6d0844010afad1c1b067d15'
+expected='287feaec78fade1b922409bb5f23a956fa3007468e8075dd15d59f22f0a090db'
 curl --fail --location --proto '=https' --proto-redir '=https' -o "$file" "$url"
 printf '%s  %s\n' "$expected" "$file" | sha256sum -c -
 sudo apt install "./$file"
 gtk-launch vista-lab-station
 ```
 
-Uninstall with `sudo apt remove vista-lab-station`. The old staged DEB declares GTK 3, libnotify, NSS, XSS, XTST, xdg-utils, AT-SPI, libuuid and libsecret. It contains `/usr/share/applications/vista-lab-station.desktop` with `Icon=vista-lab-station` and a 512×512 hicolor icon. This confirms only old candidate metadata, not that the exact-SHA CI package matches or opens from the launcher. Verify the downloaded CI DEB's desktop entry/icon before using this command for acceptance.
+Uninstall with `sudo apt purge vista-lab-station`. The candidate DEB declared its dependencies through package metadata and installed `/usr/share/applications/vista-lab-station.desktop` with `Icon=vista-lab-station`; hicolor PNG icons from 16×16 to 256×256 were present. The candidate's `desktop-file-validate`, install and purge passed in the isolated Ubuntu container. The later `main` Draft assets still require acceptance and hash verification.
 
 ### Linux AppImage
 
@@ -68,29 +68,29 @@ Uninstall with `sudo apt remove vista-lab-station`. The old staged DEB declares 
 set -eu
 file='VISTA Lab Station-0.1.0-x86_64.AppImage'
 url='<PENDING: exact URL appears only after the v0.1.0 Draft is approved and published>'
-expected='3987709605965b50ff56de01bf2719c603da26d32cc4959c09dc1cf536fd6960'
+expected='57f20261b908297917e7fc94d2096bb7704adce74a347cd0336d4ab26ea4e5ac'
 curl --fail --location --proto '=https' --proto-redir '=https' -o "$file" "$url"
 printf '%s  %s\n' "$expected" "$file" | sha256sum -c -
 chmod +x "$file"
 "$PWD/$file"
 ```
 
-The tracked `releases/v0.1.0/install-linux.sh` also pins the candidate Linux hashes and supports `--appimage` and `--deb`. Its remote installation mode requires the approved HTTPS downloads root; it refuses plain HTTP and checks the SHA-256 before install. AppImage installs into the current user's data directory and does not need sudo. Remove its installed file at `${XDG_DATA_HOME:-$HOME/.local/share}/vista-lab-station/v0.1.0/VISTA-Lab-Station-0.1.0-x86_64.AppImage`. The script does not create a launcher entry for AppImage; run the file directly. Do not imply launcher integration is tested.
+The tracked `releases/v0.1.0/install-linux.sh` also pins an older Linux candidate and supports `--appimage` and `--deb`; do not use its hashes for this run. Its remote mode requires an approved HTTPS downloads root and checks SHA-256. The verified candidate AppImage launched directly; it does not register a launcher entry. Remove the downloaded file to uninstall it.
 
-**Linux acceptance status:** previous candidate DEB metadata was inspected, but the exact-SHA package has not been installed or opened on Ubuntu. Install the verified DEB, launch through the app launcher or `gtk-launch vista-lab-station`, and remove it with `sudo apt purge vista-lab-station`. Launch the AppImage directly and remove it by deleting the downloaded file. Exact-build launcher, icon, install and uninstall checks remain pending.
+**Linux acceptance status for candidate run `45570937327`:** Ubuntu 24.04 x86_64 container reported package `vista-lab-station 0.1.0 amd64`; apt resolved the declared dependencies and installed it. `desktop-file-validate` passed, the desktop file uses `Icon=vista-lab-station`, hicolor PNG icons from 16×16 to 256×256 were installed, and the bundled Edge executable plus SO-101 scene were present. `apt purge vista-lab-station` removed the package, launcher entry, binary and installation path. The packaged Edge runtime returned version 0.1.0 with MuJoCo simulation available; an allowlisted local gripper simulation completed with `motionEnabled=false` and 11 frames. The AppImage extracted and the Electron process remained open under Xvfb for the 20-second smoke window. Docker denies Linux user namespaces, so normal Chromium sandbox startup through `gtk-launch` could not be established there; direct app startup with `--no-sandbox` worked. This is acceptance evidence for the exact-source candidate, not yet the later `main` Draft run. AppImage removal is deleting the downloaded file; it does not register a launcher entry.
 
-The DEB install should register `/usr/share/applications/vista-lab-station.desktop` with `Icon=vista-lab-station`. Verify the exact package before installing:
+Before installing the eventual Draft DEB, verify its package metadata, desktop entry and icon:
 
 ```sh
 dpkg-deb --field "$file" Package Version Architecture Depends
 dpkg-deb --contents "$file" | grep -E 'usr/share/applications/.*desktop|usr/share/icons/.*vista-lab-station'
 ```
 
-After installation, verify the launcher entry, icon and start command; after testing run `sudo apt purge vista-lab-station` and confirm it is removed. For AppImage, launch the downloaded file directly and uninstall by deleting it. These checks are pending on the exact build.
+After installation, run `desktop-file-validate /usr/share/applications/vista-lab-station.desktop`, confirm the icon resolves, then test `gtk-launch vista-lab-station`. After testing run `sudo apt purge vista-lab-station` and confirm removal. For AppImage, launch the downloaded file directly and uninstall by deleting it. Repeat these checks against the eventual `main` Draft assets.
 
 ## Runtime profiles and system requirements
 
-- **Simulation:** the CI workflow runs `npm run build:edge-runtime` before Electron Builder; package config adds `edge/dist/vista-edge-runtime` and `models/so101` as extra resources. Linux packaged MuJoCo simulation has local smoke evidence in [full acceptance](docs/DESKTOP_FULL_ACCEPTANCE.md). The target downloadable CI bytes are inaccessible here, so inspect the exact-SHA package for the Edge executable and model, install it, open Settings, confirm Simulation is ready, and complete a local MuJoCo lab before claiming this profile works in the release.
+- **Simulation:** the CI workflow runs `npm run build:edge-runtime` before Electron Builder; package config adds `edge/dist/vista-edge-runtime` and `models/so101` as extra resources. The exact-source candidate Linux DEB contained both; its packaged Edge runtime reported MuJoCo available and completed a local simulation in an Ubuntu 24.04 container. Recheck the eventual `main` Draft artifacts before treating those bytes as release evidence.
 - **Robotics:** not self-contained. Settings requires an operator-selected isolated Python 3.12 environment and a VISTA Edge source checkout containing `edge/runtime.py`. The separate `checkIk` checkout is not required; five owner-authorized checkIk-derived files are bundled in the Desktop Edge runtime. `fakeRobot=true` and `hardwareEnabled=false` are enforced by the runtime defaults; real hardware use is outside this release acceptance.
 - The published lock profile is `edge/robot-runtime/pyproject.toml` + `uv.lock`: Python 3.12.14, LeRobot 0.6.1 with Feetech, PyTorch 2.7.1 CPU, TorchVision 0.22.1 CPU, NumPy 2.2.6, MuJoCo 3.17.0, Paho MQTT 2.2.0, PySerial 3.5, PyInstaller 6.19.0 and CMake 3.31.6. It includes no CUDA/NVIDIA packages or model checkpoints. A verified isolated setup is documented in [robotics compatibility](docs/desktop/ROBOTICS_RUNTIME_COMPATIBILITY.md); environment footprint was about 1.2 GiB. This setup is optional and is not installed by the Desktop installer.
 
@@ -108,25 +108,26 @@ Then in Desktop Settings select `edge/robot-runtime/.venv/bin/python` and the au
 
 ## Known limitations
 
-- No public release approval or verified public download URLs. Windows x64, Linux x64, and macOS Apple Silicon artifacts exist in exact-SHA Actions run `45564467771`; macOS Intel is pending.
+- No Draft/public release approval or verified public download URLs. Candidate run `45570937327` contains Windows, Linux and macOS arm64 from one source SHA/run, with local payload hashes and matching GitHub archive digests. It is not the final main workflow run and must not be mixed with any future run. macOS Intel is omitted because pinned MuJoCo does not provide an Intel macOS wheel for the build Python; changing the runtime dependency is out of scope.
 - Windows and macOS clean-machine startup/runtime acceptance is outstanding; Windows/macOS signing and macOS notarization are unresolved.
-- The exact-SHA Linux DEB metadata/payload has not yet been inspected locally; DEB install/uninstall, launcher/icon behavior, and AppImage launch remain unverified on Ubuntu.
+- Linux DEB install, metadata, desktop-file validation, icon registration, purge/uninstall and packaged Simulation Profile passed in an isolated Ubuntu 24.04 container for the candidate run. AppImage launched under Xvfb. Default sandboxed GTK launch remains inconclusive because Docker denies user namespaces; test again on a standard Ubuntu desktop before publication.
 - Robotics needs external Python and Edge source checkout and is not self-contained. Hardware, enrollment/MQTT backend integration and physical robot operation are not release-certified.
-- checkIk redistribution permission is resolved by the owner grant; no license name is inferred. The source-input SBOM and third-party notices are prepared, but remain pending reconciliation against the exact native CI artifact contents and platform-specific transitive Python dependencies.
+- checkIk redistribution permission is resolved by the owner grant; no license name is inferred. The source-input SBOM/notices are prepared. Candidate run `45570937327` predates PR #4's binary scan/license archive and dependency-edge generation; the corrected evidence still needs to be run and reviewed.
 - Simulation profile and functionality must be checked against the final artifact bytes before users are directed to download.
 
 ## Release gates
 
 - [x] Owner permission for the five original checkIk files is recorded without inventing a license.
-- [x] Native draft workflow and four-platform matrix are prepared on `codex/desktop-distribution-handoff`.
-- [x] Current GitHub state checked: no Actions run at the requested source SHA, and no `v0.1.0` tag or Release exists.
-- [ ] Merge the PR so the new workflow is available on the default branch.
-- [ ] Dispatch the draft workflow for the exact source SHA. Confirm all native jobs succeeded and assets are from one run.
-- [ ] Inspect package contents and desktop entry/icon; install/open/uninstall DEB and launch AppImage on Ubuntu. Verify Simulation Profile from the installed artifact.
-- [ ] Reconcile runner SBOMs/notices against the frozen runtime and packaged Electron application; verify required third-party notices.
+- [x] Corrected native draft workflow and three-platform matrix are prepared on `codex/desktop-distribution-handoff`; Intel macOS is excluded due to the pinned dependency lacking an Intel wheel.
+- [x] No `v0.1.0` tag or Release exists. The corrected main workflow run is pending PR #4 merge.
+- [x] PR #3 merged. PR #4 corrects Windows UTF-8 inventory output, excludes unsupported Intel macOS, and adds binary SBOM/license collection. PR #4 must be merged for the corrected workflow on `main`.
+- [x] Candidate run `45570937327` passed Windows x64, Ubuntu x64, macOS arm64; provenance source SHA and each artifact platform marker match. All three archive digests matched GitHub API; installer payload SHA-256 values were recomputed locally.
+- [x] Candidate Ubuntu DEB package contents, launcher entry/icon, install/purge and packaged Simulation Profile were inspected in an isolated Ubuntu 24.04 container. AppImage launched under Xvfb; normal Chromium sandbox through GTK remains unverified in Docker.
+- [ ] Dispatch the corrected Draft workflow from `main` for the exact source SHA. Verify all native jobs and all assets from that one new run.
+- [ ] Verify per-platform Syft scans, pip dependency edges and collected license files from the corrected workflow; review remaining unresolved components/notices against packaged output.
 - [ ] Fetch Draft assets back and validate every SHA. Record exact names, architectures, checksums, and versioned URLs here only after they are available.
 - [ ] Owner reviews and explicitly approves publication. Do not publish automatically.
 
 ## Current stop point
 
-GitHub API connectivity and `gh` authentication are restored. The first exact-SHA dispatch failed because electron-builder attempted an implicit publish; workflow change `--publish never` fixed it. Successful exact-SHA run `45564467771` built Windows x64, Ubuntu x64 and macOS arm64, and its checksums/provenance are confirmed. macOS Intel is supported by the new draft workflow but cannot be dispatched until PR #3 is merged because GitHub requires that workflow on the default branch. No v0.1.0 Release or public download URL exists. Ubuntu DEB install/launcher acceptance, Simulation Profile smoke from final artifact, dependency/notices reconciliation, macOS Intel artifact and post-release fetch-back remain pending. Do not publish until those gates pass and you approve. The Draft workflow builds the requested source SHA on native runners and prepares the release files after it is merged. The Draft workflow is not public-release approval.
+GitHub authentication works; artifact transfers can be slow. PR #3 merged at `8d9ca08d63f636f2a633e134c3dca6fa4b659c4a`. Failed run `45570240949` was cancelled and must not be used. PR #4 is OPEN, CLEAN and native checks passed on `b4f2df96e7f0126dfe0a02baf2ec8197f755a89a`; it fixes Windows UTF-8 output, excludes unsupported Intel macOS, and adds binary scans, dependency edges and license collection. Those new evidence steps still need a successful corrected candidate run and review. Candidate run `45570937327` used source SHA `80aef01eca657fa8a2dbe3340bac27e048619b11`, passed Windows x64, Ubuntu x64 and macOS arm64, and its archive digests and payload hashes were verified. Ubuntu DEB install, package contents, desktop entry/icon, purge and packaged simulation passed; AppImage opened under Xvfb. Do not use these branch-run installers as Draft assets. PR #4 must be merged before dispatching from `main`. Draft asset fetch-back, binary SBOM/notices review, and publication remain pending; no public Release was created.
