@@ -46,5 +46,5 @@ No message was sent to Claude Code or Web team; external coordination needs an a
 ## Release handoff gates
 
 - `checkIk`-derived source/assets still have no confirmed redistribution license/ownership. Do not push or publicly distribute source or installers until the owner confirms rights.
-- `gh auth status` reports the configured GitHub token as invalid. The release branch and PR were not created or pushed.
+- Local branch `release/vista-capstone-final-2026-11-25` and commit `f8507ba` were created. `gh auth status` reports the configured GitHub token as invalid, SSH config has unsafe owner/mode, and outbound GitHub DNS is unavailable, so no remote branch or PR was created. checkIk redistribution rights remain unconfirmed; do not push this commit until the owner confirms them.
 - No AWS or physical hardware acceptance is certified. The merge decision is **NO-GO** until project-owner gates above are cleared.

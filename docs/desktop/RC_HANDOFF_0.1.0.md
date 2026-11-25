@@ -1,6 +1,6 @@
 # VISTA Lab Station Linux RC 0.1.0 — Handoff
 
-Internal release candidate only. Feature freeze is active. No source was committed, pushed, merged, or publicly released as part of this handoff.
+Internal release candidate only. Feature freeze is active. The final integration is recorded in local commit `f8507ba` on `release/vista-capstone-final-2026-11-25`; it has not been pushed, merged, or publicly released.
 
 ## Artifacts
 
@@ -43,6 +43,6 @@ The separate candidate integrates mutually exclusive runtime selection. Robotics
 - Cartesian targets remain experimental due the measured ~19.9 mm URDF/MuJoCo end-effector frame offset; no tolerance was widened.
 - AppImage/DEB are unsigned internal artifacts. Public redistribution remains blocked pending `checkIk` ownership/provenance confirmation.
 - The Robotics Profile has only been tested against simulation and a mock motor bus. Physical calibration, stop behavior, and motion remain unverified.
-- GitHub final handoff is blocked locally because `gh auth status` reports an invalid token; checkIk redistribution rights are also unconfirmed. No branch, commit, push, or PR was created.
+- GitHub final handoff is blocked because `gh auth status` reports an invalid token and outbound GitHub DNS is unavailable; checkIk redistribution rights are also unconfirmed. The release branch/commit exist locally only. No push or PR was created.
 
 See [English User Guide](USER_GUIDE_EN.md), [Release Notes](RELEASE_NOTES_RC.md), [Demo Procedure](DEMO_PROCEDURE_EN.md), [Hardware Commissioning Runbook](HARDWARE_COMMISSIONING_RUNBOOK.md), and [AWS Acceptance Runbook](AWS_ACCEPTANCE_RUNBOOK.md).
