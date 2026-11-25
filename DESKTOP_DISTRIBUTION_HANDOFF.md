@@ -1,50 +1,36 @@
 # VISTA Lab Station 0.1.0 — Ubuntu Distribution Handoff
 
-**Current state:** PR #5 is open. Ubuntu-only CI candidate completed successfully from PR head `e5d51137165bb6d50ad4e7e6e07b82b17ead45cf`; its single DEB was built from Desktop source SHA `80aef01eca657fa8a2dbe3340bac27e048619b11`. No Draft Release exists because the workflow must be dispatched from `main` after PR #5 is merged. Candidate values below are not final release metadata. Do not show a download-ready link on VISTA Web until the main-branch Draft asset is fetched back and independently checksum-verified.
+**Release state:** GitHub Draft Release v0.1.0 exists and contains the Ubuntu amd64 DEB plus release documentation. It is not public. The Draft was assembled from the successful Ubuntu build artifact in run [45628473427](https://github.com/leduc121/vista_lab/actions/runs/45628473427), because that run's release-assembly job failed on a mismatched artifact directory name. The workflow fix and artifact-scoped notice reconciliation are in targeted PR #6. The final DEB hash is unchanged; no binary rebuild was performed for documentation updates.
 
-## Release scope
+## Release artifact
 
-- Version: `0.1.0`
-- Supported package: Ubuntu/Debian Linux `amd64`
-- Installer: `VISTA Lab Station-0.1.0-amd64.deb`
-- Windows and macOS: **Coming Soon**; not built or tested for this Ubuntu-only release.
-- AppImage: not included.
-- Desktop application source: `80aef01eca657fa8a2dbe3340bac27e048619b11`.
-
-## Release asset status
-
-| Field | Value |
+| Field | Verified value |
 | --- | --- |
-| DEB filename | `VISTA Lab Station-0.1.0-amd64.deb` |
-| Candidate size | 131,403,604 bytes (Ubuntu-only PR validation run; not final Draft asset) |
-| Candidate SHA-256 | `04f1288624cb8a6ffe2805f3bd7fe34779818ec99e6d73d6f8e686ba247f04fb` (locally recomputed; not final Draft asset) |
-| Draft Release URL | Pending PR #5 merge and successful main workflow run |
-| Public download URL | Pending owner publication and fetch-back verification |
-| Expected stable asset path | `https://github.com/leduc121/vista_lab/releases/download/v0.1.0/VISTA%20Lab%20Station-0.1.0-amd64.deb` — anticipated only; not a valid download until published and verified |
+| Version | `0.1.0` |
+| Platform / architecture | Ubuntu/Debian Linux `amd64` (x86_64) |
+| DEB asset filename | `VISTA.Lab.Station-0.1.0-amd64.deb` |
+| Size | `131,395,882` bytes |
+| SHA-256 | `a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4` |
+| Desktop source SHA | `80aef01eca657fa8a2dbe3340bac27e048619b11` |
+| Main workflow revision | `d3bd155c72c4cbec8b0ea145ea46f1002fef8a82` |
+| Build artifact archive SHA-256 | `bfd6d1d4380177ebe5145228e90e468ddc49217e34eab8dc005c6adc248db699` |
+| Draft Release URL | https://github.com/leduc121/vista_lab/releases/tag/untagged-c2df6ca831149dc1691e |
+| Expected public DEB URL after publish | `https://github.com/leduc121/vista_lab/releases/download/v0.1.0/VISTA.Lab.Station-0.1.0-amd64.deb` — pending publication and verification; not a public download now |
+| Local DEB for owner acceptance | `/tmp/vista-draft-download/VISTA.Lab.Station-0.1.0-amd64.deb` |
 
-Ubuntu-only validation run: [45587950482](https://github.com/leduc121/vista_lab/actions/runs/45587950482), head `e5d51137165bb6d50ad4e7e6e07b82b17ead45cf`, source marker `80aef01eca657fa8a2dbe3340bac27e048619b11`, platform marker `ubuntu-x64`. Only job `build (ubuntu-x64, ubuntu-latest, --linux deb --x64)` succeeded; Draft assembly was intentionally skipped. The uploaded artifact archive SHA-256 was `bf4d67ede3fc49da83655b4edbee067f5e27ae0ed337ae716e1f47541752c48b`; the DEB extracted from it has the candidate SHA-256 and size above. This is not a release asset. Do not mix it with artifacts from other CI runs.
+The Draft contains only the Ubuntu DEB, provenance, release notes, checksums, source-input/binary/runtime SBOMs, third-party notices, license archive, and Ubuntu install/reconciliation notes. No AppImage, Windows, or macOS artifact is included.
 
 ## Ubuntu installation
 
-### Option A — download and open the installer
-
-Download `VISTA Lab Station-0.1.0-amd64.deb` from the published v0.1.0 Release, then open the file in Ubuntu Software or install it with:
+The following commands use the expected public URL. They will work after the owner publishes the Draft; do not present them as a ready public download before then.
 
 ```sh
-sudo apt install ./VISTA\ Lab\ Station-0.1.0-amd64.deb
-```
-
-### Option B — terminal download and install
-
-The command below becomes ready to copy after the Release is published and the asset URL and SHA-256 have been verified. The URL is intentionally pending until then.
-
-```sh
-curl -fL "<VERIFIED_PUBLIC_RELEASE_ASSET_URL>" -o vista-lab-station.deb
-printf '%s  %s\n' '<VERIFIED_DEB_SHA256>' vista-lab-station.deb | sha256sum -c -
+curl -fL "https://github.com/leduc121/vista_lab/releases/download/v0.1.0/VISTA.Lab.Station-0.1.0-amd64.deb" -o vista-lab-station.deb
+printf '%s  %s\n' 'a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4' vista-lab-station.deb | sha256sum -c -
 sudo apt install ./vista-lab-station.deb
 ```
 
-After installation, search for **VISTA Lab Station** in Ubuntu's Application Menu or launch from a terminal:
+Open from the Ubuntu Application Menu or run:
 
 ```sh
 gtk-launch vista-lab-station
@@ -56,24 +42,26 @@ Uninstall:
 sudo apt purge vista-lab-station
 ```
 
-For Ubuntu-only candidate `45587950482`, package installation succeeded in an isolated Ubuntu 24.04 amd64 container. The DEB declares its GTK/desktop shared-library dependencies; `desktop-file-validate` passed for `/usr/share/applications/vista-lab-station.desktop`; hicolor icons were present at 16, 32, 48, 64, 128 and 256 px. Simulation Profile runtime health passed (MuJoCo available; allowlisted local SO-101 home simulation produced 19 frames with `motionEnabled=false`). `apt purge vista-lab-station` then removed the package, desktop entry, icon and `/opt/VISTA Lab Station`. Container restrictions prevented a normal Chromium sandbox launch through the desktop session; menu launch is not yet accepted on a real Ubuntu desktop. Repeat all checks against the final Draft asset after main workflow creation.
+The package declares `libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0`; APT resolves these dependencies.
+
+## Acceptance status
+
+- CI: native build job succeeded for Ubuntu x64 DEB only. The main workflow's `draft-release` job failed because it expected `release-assets/platforms/ubuntu-x64/`, while `download-artifact` created `release-assets/platforms/vista-desktop-ubuntu-x64/`. The Draft was assembled from the exact successful build artifact; PR #6 corrects the assembler and release filename normalization.
+- Provenance: artifact markers and run metadata match Desktop source SHA `80aef01eca657fa8a2dbe3340bac27e048619b11`; the full archive SHA is recorded above. The DEB was downloaded from the Draft and its hash/size recomputed. All `SHA256SUMS` entries passed on the downloaded assets.
+- Package: final DEB metadata is package `vista-lab-station`, version `0.1.0`, architecture `amd64`. Its desktop file and hicolor icons (16, 32, 48, 64, 128, 256 px) are present in the package. The exact final DEB has not been installed on the user's Ubuntu desktop because no `sudo` installation was authorized. Earlier install/Simulation/uninstall results used a different DEB hash and do not count for this asset.
+- Simulation Profile: packaged runtime acceptance passed on an earlier candidate only. Recheck using the local DEB above before claiming final-binary acceptance.
+- Launcher and uninstall: static launcher/icon presence is verified in the final package; actual Application Menu launch and uninstall of this exact hash remain for owner acceptance.
+- SBOM/notices: binary SBOM has 47 components; runtime Python SBOM has 18 components/19 dependency relationships and represents the build Python inventory rather than a complete frozen-runtime graph. The release archive now includes exact-version Ubuntu 26.04 copyright records for bundled Ubuntu-origin native libraries and the verbatim CPython 3.11.18 license text. `docs/desktop/UBUNTU_THIRD_PARTY_RECONCILIATION.md` maps the bundled and APT-provided dependency sets, states how each runtime-SBOM entry relates to the final package, and preserves SBOM `NOASSERTION` values where no SPDX assertion was generated. No license is inferred for first-party VISTA code. All Draft assets were re-downloaded and verified against the refreshed `SHA256SUMS` after replacing its notice/archive assets.
 
 ## System requirements
 
-- Ubuntu/Debian Linux on 64-bit x86 (`amd64`). Ubuntu 24.04 amd64 was the isolated acceptance environment.
-- Install any additional shared-library dependencies through `apt`; the DEB declares its package dependencies. Confirm the exact `Depends` field from the final Draft package before publishing minimum OS claims.
-- CPU/RAM, disk, GPU and minimum Ubuntu versions beyond the acceptance environment have not been established. Do not advertise unsupported minimum requirements.
-- Internet is needed to download the installer. Simulation runs locally after installation.
+- Ubuntu/Debian Linux x86_64 (`amd64`). The native CI runner for this artifact was Ubuntu 26.04.1; confirm installation behavior on the intended Ubuntu release during owner acceptance.
+- Internet access for the initial download and any APT dependencies not already installed.
+- No GPU or CUDA is required for Simulation Profile. The release does not install a model or modify system Python.
 
-## Runtime profiles
+## Robotics Profile setup
 
-### Simulation Profile
-
-Simulation uses the packaged Edge runtime and SO-101 MuJoCo scene. The exact-source DEB from main run `45581975447` passed an isolated simulation check with 19 frames and `motionEnabled=false`. Recheck the final Draft bytes.
-
-### Robotics Profile
-
-Robotics is optional and is not self-contained. It needs an operator-selected Python 3.12 environment and an authorized VISTA Edge source checkout containing `edge/runtime.py`. The locked setup is:
+Robotics Profile requires an operator-managed Python 3.12.14 virtual environment and an authorized VISTA Edge source checkout containing `edge/runtime.py`. It is not bundled in the DEB.
 
 ```sh
 uv python install 3.12.14
@@ -81,16 +69,12 @@ uv sync --locked --project edge/robot-runtime --python 3.12.14
 uv pip check --python edge/robot-runtime/.venv/bin/python
 ```
 
-In Desktop Settings, select `edge/robot-runtime/.venv/bin/python` and the Edge checkout root. This uses an isolated virtual environment; do not install dependencies into system Python. No model checkpoint or CUDA is installed or downloaded by Desktop. Hardware operation is not certified by this release.
-
-## SBOM, notices and provenance
-
-Candidate run `45587950482` contains a 47-component CycloneDX native-package SBOM, an 18-component/19-edge Python runtime SBOM, and a 584-entry license/notice archive whose ZIP integrity check passed. The Debian package itself contains the packaged runtime; `dpkg-deb` reports package `vista-lab-station`, version `0.1.0`, architecture `amd64`, and declared dependencies `libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0`. The source `THIRD_PARTY_NOTICES.md` still explicitly says its inventory is not artifact-complete and asks for reconciliation. Treat dependency-license closure as a release blocker until that caveat is resolved against the Ubuntu-only binary SBOM, runtime SBOM and archive and the final asset hashes match. checkIk owner authorization and the five reused files are recorded; no SPDX license is inferred for those original files.
+Select `edge/robot-runtime/.venv/bin/python` and the Edge checkout root in Desktop Settings. No model, CUDA, or system-Python dependency is installed by Desktop. Physical robot operation is not certified by this release.
 
 ## Known limitations
 
-- Only Ubuntu/Debian amd64 DEB is in v0.1.0. AppImage is excluded. Windows and macOS are Coming Soon and were not built or tested for this scope.
-- No Draft Release exists yet; PR #5 must be merged before main workflow dispatch. The expected stable asset path above is not live or verified.
-- The Ubuntu-only candidate DEB was tested in an isolated Ubuntu 24.04 container. Package install, desktop file validation, icon presence, Simulation Profile, and uninstall passed. Standard desktop-session menu launch remains unverified because the container blocked Chromium sandbox startup; confirm on Ubuntu desktop before publication.
-- Robotics needs external Python and Edge checkout. Physical robot operation, enrollment, and cloud integration are not certified.
-- Do not use candidate checksums as final checksums unless they exactly match the Ubuntu-only Draft asset and GitHub fetch-back.
+- Ubuntu/Debian amd64 DEB only. AppImage is excluded; Windows and macOS are Coming Soon and were not built or tested for v0.1.0.
+- Draft downloads are private to the Draft until publication. The expected public URL above is not yet a verified public download.
+- Exact final-DEB installation, Simulation Profile, Application Menu launch, and uninstall require owner acceptance on Ubuntu.
+- Third-party evidence is attached for the binary-SBOM components identified in the reconciliation document. Keep SBOM `NOASSERTION` values intact; the accompanying verbatim copyright/license records are evidence, not rewritten SPDX assertions. Review the updated Draft notice/archive assets and checksum manifest before publication.
+- Robotics requires an external Edge checkout and Python environment. Physical robot operation is not certified.
