@@ -2,6 +2,12 @@ name: Native desktop acceptance
 
 on:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full source commit SHA to build
+        required: true
+        default: 80aef01eca657fa8a2dbe3340bac27e048619b11
+        type: string
   pull_request:
     paths:
       - 'edge/**'
@@ -36,6 +42,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -49,8 +57,14 @@ jobs:
       - run: npm run build:edge-runtime
         shell: bash
       - run: npm run build:renderer
-      - run: npx electron-builder ${{ matrix.target }}
+      - run: npx electron-builder ${{ matrix.target }} --publish never
       - run: npm run release:checksums
+      - name: Record build provenance
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          printf 'source_sha=%s\nworkflow_run_id=%s\nworkflow_run_url=%s\n' "$SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > dist/phase6-candidate/BUILD_PROVENANCE.txt
       - uses: actions/upload-artifact@v4
         with:
           name: vista-lab-station-${{ matrix.os }}

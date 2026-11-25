@@ -73,7 +73,7 @@ jobs:
       - run: npm run build:edge-runtime
         shell: bash
       - run: npm run build:renderer
-      - run: npx electron-builder ${{ matrix.target }}
+      - run: npx electron-builder ${{ matrix.target }} --publish never
 
       - name: Stage platform artifact and runtime SBOM
         shell: bash
