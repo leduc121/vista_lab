@@ -138,20 +138,23 @@ jobs:
               esac
               if [[ "$basename" == runtime-python-sbom.cdx.json ]]; then
                 cp "$file" "release-assets/final/${platform}-runtime-python-sbom.cdx.json"
+              elif [[ "$basename" == 'VISTA Lab Station-0.1.0-amd64.deb' ]]; then
+                cp "$file" release-assets/final/VISTA.Lab.Station-0.1.0-amd64.deb
               else
                 cp "$file" release-assets/final/
               fi
             done
           done
           [[ $(find release-assets/platforms -mindepth 1 -maxdepth 1 -type d | wc -l) -eq 1 ]]
-          [[ "$(cat release-assets/platforms/ubuntu-x64/platform-architecture.txt)" == ubuntu-x64 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name 'VISTA Lab Station-0.1.0-amd64.deb' | wc -l) -eq 1 ]]
+          platform_dir="$(find release-assets/platforms -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          [[ "$(cat "$platform_dir/platform-architecture.txt")" == ubuntu-x64 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name 'VISTA.Lab.Station-0.1.0-amd64.deb' | wc -l) -eq 1 ]]
           [[ $(find release-assets/final -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.appimage' -o -iname '*.dmg' \) | wc -l) -eq 0 ]]
           cp release-metadata/docs/desktop/DESKTOP_DISTRIBUTION_SBOM.cdx.json release-assets/final/SOURCE-INPUT-SBOM.cdx.json
           cp release-metadata/docs/desktop/THIRD_PARTY_NOTICES.md release-assets/final/THIRD_PARTY_NOTICES.md
           cp release-metadata/docs/desktop/RELEASE_NOTES_0.1.0.md release-assets/final/RELEASE_NOTES_0.1.0.md
           printf 'source_sha=%s\nworkflow_run_id=%s\nworkflow_run_url=%s\n' "$SOURCE_SHA" "$RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > release-assets/final/BUILD_PROVENANCE.txt
-          deb='VISTA Lab Station-0.1.0-amd64.deb'
+          deb='VISTA.Lab.Station-0.1.0-amd64.deb'
           deb_sha="$(sha256sum "release-assets/final/$deb" | cut -d' ' -f1)"
           deb_size="$(stat -c '%s' "release-assets/final/$deb")"
           deb_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v0.1.0/$deb"
