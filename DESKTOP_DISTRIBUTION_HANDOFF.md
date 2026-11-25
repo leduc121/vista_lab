@@ -1,6 +1,6 @@
 # VISTA Lab Station 0.1.0 — Ubuntu Distribution Handoff
 
-**Release state:** GitHub Draft Release v0.1.0 exists and contains the Ubuntu amd64 DEB plus release documentation. It is not public. The Draft was assembled from the successful Ubuntu build artifact in run [45628473427](https://github.com/leduc121/vista_lab/actions/runs/45628473427), because that run's release-assembly job failed on a mismatched artifact directory name. The workflow fix is in targeted PR #6. Do not publish until the remaining acceptance and third-party notice blockers below are resolved.
+**Release state:** GitHub Draft Release v0.1.0 exists and contains the Ubuntu amd64 DEB plus release documentation. It is not public. The Draft was assembled from the successful Ubuntu build artifact in run [45628473427](https://github.com/leduc121/vista_lab/actions/runs/45628473427), because that run's release-assembly job failed on a mismatched artifact directory name. The workflow fix and artifact-scoped notice reconciliation are in targeted PR #6. The final DEB hash is unchanged; no binary rebuild was performed for documentation updates.
 
 ## Release artifact
 
@@ -51,7 +51,7 @@ The package declares `libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-ut
 - Package: final DEB metadata is package `vista-lab-station`, version `0.1.0`, architecture `amd64`. Its desktop file and hicolor icons (16, 32, 48, 64, 128, 256 px) are present in the package. The exact final DEB has not been installed on the user's Ubuntu desktop because no `sudo` installation was authorized. Earlier install/Simulation/uninstall results used a different DEB hash and do not count for this asset.
 - Simulation Profile: packaged runtime acceptance passed on an earlier candidate only. Recheck using the local DEB above before claiming final-binary acceptance.
 - Launcher and uninstall: static launcher/icon presence is verified in the final package; actual Application Menu launch and uninstall of this exact hash remain for owner acceptance.
-- SBOM/notices: binary SBOM has 47 components; runtime Python SBOM has 18 components/19 dependency relationships; the 584-entry license archive passed ZIP integrity. Several bundled system-library components are `NOASSERTION`, and the notice archive is not yet mapped one-to-one to the full binary dependency closure. `UBUNTU_THIRD_PARTY_RECONCILIATION.md` in the Draft documents this gap; resolve it before public publication. No licenses are inferred for unresolved items.
+- SBOM/notices: binary SBOM has 47 components; runtime Python SBOM has 18 components/19 dependency relationships and represents the build Python inventory rather than a complete frozen-runtime graph. The release archive now includes exact-version Ubuntu 26.04 copyright records for bundled Ubuntu-origin native libraries and the verbatim CPython 3.11.18 license text. `docs/desktop/UBUNTU_THIRD_PARTY_RECONCILIATION.md` maps the bundled and APT-provided dependency sets, states how each runtime-SBOM entry relates to the final package, and preserves SBOM `NOASSERTION` values where no SPDX assertion was generated. No license is inferred for first-party VISTA code. Re-download the Draft asset manifest/checksums after its documentation assets are replaced.
 
 ## System requirements
 
@@ -76,5 +76,5 @@ Select `edge/robot-runtime/.venv/bin/python` and the Edge checkout root in Deskt
 - Ubuntu/Debian amd64 DEB only. AppImage is excluded; Windows and macOS are Coming Soon and were not built or tested for v0.1.0.
 - Draft downloads are private to the Draft until publication. The expected public URL above is not yet a verified public download.
 - Exact final-DEB installation, Simulation Profile, Application Menu launch, and uninstall require owner acceptance on Ubuntu.
-- Third-party license closure remains pending for some binary SBOM entries. Do not publish until reconciled and notices are complete.
+- Third-party evidence is attached for the binary-SBOM components identified in the reconciliation document. Keep SBOM `NOASSERTION` values intact; the accompanying verbatim copyright/license records are evidence, not rewritten SPDX assertions. Review the updated Draft notice/archive assets and checksum manifest before publication.
 - Robotics requires an external Edge checkout and Python environment. Physical robot operation is not certified.

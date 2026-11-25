@@ -1,6 +1,6 @@
 # VISTA Lab Station third-party notices
 
-**Scope:** source/build-input notice inventory for Desktop 0.1.0 at merge `80aef01eca657fa8a2dbe3340bac27e048619b11`. This is prepared for release review, but is **not yet an artifact-complete notice pack**: native CI artifacts were not available for package-level verification, and `requirements-edge.txt` pins only direct Python packages, not the resolved transitive versions. Do not label this file as notices for a specific published binary until the final CI artifacts and native runtime dependency set have been reconciled.
+**Scope:** source/build-input notice inventory for Desktop 0.1.0 at merge `80aef01eca657fa8a2dbe3340bac27e048619b11`, followed by an artifact-specific Ubuntu amd64 reconciliation appendix. The appendix applies only to DEB SHA-256 `a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4` built in native CI run `45628473427`. The earlier source inventory remains broader than the Ubuntu runtime and should not be read as a dependency lockfile. Consult `UBUNTU_THIRD_PARTY_RECONCILIATION.md` and the matching `ubuntu-x64-THIRD_PARTY_LICENSES.zip` for binary/SBOM mappings and verbatim package license evidence.
 
 ## First-party code and permission record
 
@@ -781,7 +781,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #### PyInstaller license and exception
 
-The exact PyInstaller license file from the local 6.19.0 package is reproduced below. Confirm the exact CI build used this version before treating this as artifact-final notice text.
+The exact PyInstaller license file from version 6.19.0 is reproduced below. Native CI run 45628473427 used PyInstaller 6.19.0 in its Ubuntu build environment; this license and the distribution exception are also included in the release license archive. The PyInstaller distribution itself is a build tool, while its bootloader is a distinct bundled output.
 
 ```text
 ================================
@@ -1949,7 +1949,7 @@ All 510 entries in `package-lock.json` have a declared `license` field. The inve
 
 ## Release use
 
-Attach this notice file to the GitHub Release and verify it against exact artifacts. Preserve notices already embedded in Electron, Blockly, model assets, and native runtime. Add resolved transitive Python versions/licenses and any required license texts from each exact native CI build before marking this file complete. No application code, safety behavior, or WF03 contract was changed.
+The source/build-input inventory above is broader than the final frozen runtime. The appended Ubuntu amd64 artifact-specific section and `UBUNTU_THIRD_PARTY_RECONCILIATION.md` document its exact DEB identity, binary/runtime SBOM scope, bundled-versus-system dependency placement, and notice evidence. No application code, safety behavior, or WF03 contract was changed.
 
 ```text
 Copyright (c) 2001-2020 Chris Liechti <cliechti@gmx.net>
@@ -6879,3 +6879,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 ```
+
+
+## Artifact-specific appendix — Ubuntu amd64 v0.1.0
+
+This appendix is for `VISTA.Lab.Station-0.1.0-amd64.deb` only (131,395,882 bytes; SHA-256 `a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4`). Native CI run [45628473427](https://github.com/leduc121/vista_lab/actions/runs/45628473427) built the artifact from source SHA `80aef01eca657fa8a2dbe3340bac27e048619b11` on Ubuntu 26.04.1.
+
+The final binary SBOM's Ubuntu-origin bundled native components whose license field is `NOASSERTION` are mapped by exact component/version to verbatim Ubuntu package `copyright` records in `ubuntu-x64-THIRD_PARTY_LICENSES.zip` under `ubuntu-runner-copyright/`. That directory also includes the exact upstream CPython 3.11.18 `LICENSE` text for the bundled frozen runtime. The CycloneDX `NOASSERTION` values are intentionally unchanged; the notices archive supplies source evidence without rewriting or guessing SPDX declarations. The same archive preserves the package license files already embedded with MuJoCo, NumPy, Paho MQTT, pySerial, vendored `importlib_metadata`/`wheel`, Electron, Chromium, and PyInstaller.
+
+The DEB's APT `Depends` (`libgtk-3-0`, `libnotify4`, `libnss3`, `libxss1`, `libxtst6`, `xdg-utils`, `libatspi2.0-0`, `libuuid1`, `libsecret-1-0`) are host-provided and are not bundled by this package. The build Python SBOM is an environment inventory; the artifact-specific reconciliation records which distributions are present in the final frozen tree and which are not. See `UBUNTU_THIRD_PARTY_RECONCILIATION.md` for the component mapping, placement, and limitations.
+
+The first-party VISTA application component retains `NOASSERTION`; no project-wide license is assigned here. The checkIk owner authorization remains as recorded in the first-party permission section above.
