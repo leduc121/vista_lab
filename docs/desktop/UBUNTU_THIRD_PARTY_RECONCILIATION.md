@@ -78,7 +78,7 @@ The release's third-party notice inventory and license archive are now reconcile
 ## Remaining acceptance gates
 
 - Owner installation/launcher/icon/Simulation Profile/uninstall acceptance on this exact DEB hash is still pending. Static package inspection does not claim desktop-session acceptance.
-- Draft v0.1.0 remains unpublished. Its assets/checksums must be re-verified after replacing the reconciliation, notices, license archive and checksum assets. No new DEB build is needed for document-only changes.
+- Draft v0.1.0 remains unpublished. After replacing its notices, reconciliation, license archive and checksum assets, all ten SHA256SUMS entries were verified against a fresh Draft download and the license ZIP passed its integrity check. The DEB hash remained unchanged. No new DEB build is needed for document-only changes.
 
 ## Evidence sources
 
