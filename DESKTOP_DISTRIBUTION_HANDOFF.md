@@ -62,8 +62,8 @@ To create a draft manually: repository → **Releases** → **Draft a new releas
 ## Source and dependency distribution rights
 
 - `models/so101` carries the upstream MuJoCo Menagerie / Robot Studio model README and Apache-2.0 license. `renderer/assets/so101` carries its LICENSE and NOTICE. See [asset provenance](docs/desktop/ASSET_PROVENANCE.md).
-- **checkIk redistribution is not cleared.** Tracked files under `edge/checkik_kinematics/` are copied from the user's checkIk workspace. Their [NOTICE](edge/checkik_kinematics/NOTICE.md) says the source had no supplied license and requires license resolution before redistribution. `edge/runtime.py` imports these modules and the native PyInstaller build bundles the Edge runtime. Excluding the separate ignored top-level `checkIk/` directory therefore does not exclude copied checkIk code from installers. This blocks public distribution until written permission/license is obtained or the copied code is replaced with independently authorized code and rebuilt.
-- `package-lock.json` has license metadata for npm dependencies and Electron output includes Chromium/Electron licenses; this is not a reviewed notice bundle. The Python lock has 62 packages; the native runtime bundles MuJoCo, Paho MQTT, PySerial and their transitive dependencies. No complete reviewed third-party notices/SBOM matching final installer contents was found. Dependency redistribution is **not fully verified**; generate and review notices for the exact package contents before public release.
+- **checkIk owner permission is confirmed.** The owner confirmed that they own the checkIk source and authorize integration, modification, packaging, and redistribution as part of VISTA Lab Station, with no additional attribution or notice required for their original code. No named SPDX license is assigned. Five files are reused under `edge/checkik_kinematics/`: `__init__.py`, `ik.py`, `kinematics.py`, `safety.py`, and `so101_new_calib.urdf`; the exact provenance and SHA-256 values are recorded in [third-party notices](docs/desktop/THIRD_PARTY_NOTICES.md) and the CycloneDX SBOM. Runtime imports these files and packages them through the frozen Edge runtime. The rest of the separate ignored checkIk checkout is not included.
+- `package-lock.json` and the direct Python dependency inventory are represented in the prepared source-input SBOM/notices. Electron/Chromium and MuJoCo license texts are documented. The Python runtime resolves transitive versions per native CI job, so dependency redistribution is **not yet fully verified against final installer contents**; reconcile exact artifact contents before publication.
 - Windows/macOS artifacts are unsigned according to the current candidate manifest; signing/notarization policy and its effect on final hashes are unresolved.
 
 ## Linux installation and website command snippets
@@ -105,7 +105,7 @@ The tracked `releases/v0.1.0/install-linux.sh` also pins the candidate Linux has
 ## Runtime profiles and system requirements
 
 - **Simulation:** the CI workflow runs `npm run build:edge-runtime` before Electron Builder; package config adds `edge/dist/vista-edge-runtime` and `models/so101` as extra resources. Linux packaged MuJoCo simulation has local smoke evidence in [full acceptance](docs/DESKTOP_FULL_ACCEPTANCE.md). The target downloadable CI bytes are inaccessible here, so inspect the exact-SHA package for the Edge executable and model, install it, open Settings, confirm Simulation is ready, and complete a local MuJoCo lab before claiming this profile works in the release.
-- **Robotics:** not self-contained. Settings requires an operator-selected isolated Python 3.12 environment and a VISTA Edge source checkout containing `edge/runtime.py`. `checkIk` source is not required or packaged. `fakeRobot=true` and `hardwareEnabled=false` are enforced by the runtime defaults; real hardware use is outside this release acceptance.
+- **Robotics:** not self-contained. Settings requires an operator-selected isolated Python 3.12 environment and a VISTA Edge source checkout containing `edge/runtime.py`. The separate `checkIk` checkout is not required; five owner-authorized checkIk-derived files are bundled in the Desktop Edge runtime. `fakeRobot=true` and `hardwareEnabled=false` are enforced by the runtime defaults; real hardware use is outside this release acceptance.
 - The published lock profile is `edge/robot-runtime/pyproject.toml` + `uv.lock`: Python 3.12.14, LeRobot 0.6.1 with Feetech, PyTorch 2.7.1 CPU, TorchVision 0.22.1 CPU, NumPy 2.2.6, MuJoCo 3.17.0, Paho MQTT 2.2.0, PySerial 3.5, PyInstaller 6.19.0 and CMake 3.31.6. It includes no CUDA/NVIDIA packages or model checkpoints. A verified isolated setup is documented in [robotics compatibility](docs/desktop/ROBOTICS_RUNTIME_COMPATIBILITY.md); environment footprint was about 1.2 GiB. This setup is optional and is not installed by the Desktop installer.
 
 Ubuntu demo-host setup (uses `uv`, never modifies system Python):
@@ -127,7 +127,7 @@ Then in Desktop Settings select `edge/robot-runtime/.venv/bin/python` and the au
 - Windows and macOS clean-machine startup/runtime acceptance is outstanding; Windows/macOS signing and macOS notarization are unresolved.
 - Linux package metadata is inspected, but DEB install/uninstall and launcher behavior are not yet demonstrated on a clean Ubuntu/Debian desktop.
 - Robotics needs external Python and Edge source checkout and is not self-contained. Hardware, enrollment/MQTT backend integration and physical robot operation are not release-certified.
-- Complete dependency license/notice review and CHECKIK-derived code rights need clearance before public distribution.
+- checkIk redistribution permission is resolved by the owner grant; no license name is inferred. The source-input SBOM and third-party notices are prepared, but remain pending reconciliation against the exact native CI artifact contents and platform-specific transitive Python dependencies.
 - Simulation profile and functionality must be checked against the final artifact bytes before users are directed to download.
 
 ## Release gate checklist
@@ -135,11 +135,12 @@ Then in Desktop Settings select `edge/robot-runtime/.venv/bin/python` and the au
 - [ ] Verify successful native CI jobs have `head_sha` equal to `80aef01eca657fa8a2dbe3340bac27e048619b11` and retrieve their retained artifacts.
 - [ ] Add a macOS Intel native job and obtain x64 DMG, if Intel support remains in scope; verify arm64 DMG.
 - [ ] Verify each final artifact's platform/architecture, filename, SHA-256, package contents, Simulation Profile, launcher and uninstall on clean target systems.
-- [ ] Resolve checkIk-adaptation rights and complete transitive dependency notices/SBOM; keep checkIk checkout source excluded unless licensed.
+- [x] Record owner authorization for the five reused checkIk files without assigning a named license.
+- [ ] Reconcile prepared source-input SBOM/notices with exact-SHA native artifacts and resolved transitive Python dependencies.
 - [ ] Decide signing/notarization; if signed, recalculate all hashes after signing.
 - [ ] Update release manifest, `SHA256SUMS`, release notes and this handoff from final artifacts; create a draft v0.1.0 Release only after artifact evidence is assembled.
 - [ ] Validate every versioned download URL and checksum from a clean client; then provide website commands/links to Web owner. Publish only after explicit approval.
 
 ## Current stop point
 
-GitHub API is blocked from this environment, so native CI and artifacts for the exact merge SHA cannot be identified or validated. Existing staged files and sums are from another candidate and must not be reused. The copied checkIk kinematics files are included in the packaged runtime with no license supplied. Do not publish `v0.1.0`; use the manual GitHub Web procedure to establish CI provenance and obtain checkIk redistribution rights plus dependency notices first. If those cannot be confirmed, stop without creating or publishing the release.
+GitHub API is blocked from this environment, so native CI and artifacts for the exact merge SHA cannot be identified or validated. Existing staged files and sums are from another candidate and must not be reused. The five reused checkIk files are included in the packaged runtime. Their owner explicitly authorized redistribution for VISTA Lab Station; no SPDX license was assigned. Do not publish `v0.1.0` until the exact-SHA CI artifacts are identified, their contents and native dependency closure are checked, and the artifact-specific SBOM/notices and checksums are finalized. The GitHub Web procedure above is the manual provenance path; it does not authorize publication.
