@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { PolicyActionRecorder } = require('../policy-action-recorder');
 
 test('records only simulation VLA proposals with model latency and experiment scope', () => {
@@ -26,7 +27,22 @@ test('records only simulation VLA proposals with model latency and experiment sc
     assert.equal(event.proposal.jointPositions.length, 6);
     assert.equal(event.observation.imageViews[0], 'observation.images.front');
     assert.equal(JSON.stringify(event).includes('place block safely'), false);
-    assert.equal(fs.statSync(path.join(root, 'recordings/vla-actions/actions.ndjson')).mode & 0o077, 0);
+    const actionFile = path.join(root, 'recordings/vla-actions/actions.ndjson');
+    if (process.platform === 'win32') {
+      // Windows does not expose distinct owner/group/other mode bits; verify the actual NTFS ACL instead.
+      const escapedPath = actionFile.replace(/'/g, "''");
+      const script = [
+        `$path = '${escapedPath}'`,
+        '$acl = Get-Acl -LiteralPath $path',
+        "$broadSids = @('S-1-1-0', 'S-1-5-4', 'S-1-5-11', 'S-1-5-32-545')",
+        '$readWrite = [System.Security.AccessControl.FileSystemRights]::Read -bor [System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::Modify -bor [System.Security.AccessControl.FileSystemRights]::FullControl',
+        "$broadAllow = $acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -in $broadSids -and ($_.FileSystemRights -band $readWrite) -ne 0 }",
+        "if ($broadAllow) { Write-Output 'shared'; exit 1 } else { Write-Output 'private' }"
+      ].join('; ');
+      assert.equal(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' }).trim(), 'private');
+    } else {
+      assert.equal(fs.statSync(actionFile).mode & 0o077, 0);
+    }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
