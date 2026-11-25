@@ -137,7 +137,10 @@ const spotlightRobotSvg = () => {
 const bridge = (typeof window !== 'undefined' && window.vista) ? window.vista : {
   call: async () => ({ ok: false, error: 'Open the local demo preview or run the Electron desktop app.' }),
   getCfg: async () => ({ mock: false, rememberedUsername: '' }),
-  setCfg: async () => ({})
+  setCfg: async () => ({}),
+  safetyStatus: async () => ({ state: 'UNVERIFIED_RUNTIME', emergencyStopLatched: false, hardwareEnabled: false,
+    activeSources: [], calibrationReady: false, watchdog: 'UNAVAILABLE', lastEvent: 'No Edge Runtime bridge is present.' }),
+  moveCartesianSimulation: async () => { throw new Error('No Edge Runtime bridge is present.'); }
 };
 bridge.onPolicyFrame?.((raw) => {
   const frame = parseTwinFrame(raw, 'local-so101-simulation');
@@ -542,9 +545,10 @@ async function dashboardView() {
   if (view !== 'dashboard') return;
   const edge = runtime?.status || {};
   const teleop = edge.teleoperation || {};
+  const safety = edge.safety || await bridge.safetyStatus().catch(() => ({}));
   const armStates = edge.arms || { 'leader-a': edge.leader, 'follower-a': edge.physical };
   const physical = Object.values(armStates).filter((arm) => arm?.connected);
-  const estop = Object.values(teleop).some((pair) => pair?.emergencyStopLatched) ? 'LATCHED' : 'No active simulated E-stop';
+  const estop = safety.emergencyStopLatched ? 'LATCHED' : 'RESET · UNARMED';
   const runtimeKind = runtime?.runtimeKind === 'MOCK_RUNTIME' ? 'MOCK_RUNTIME'
     : physical.length ? 'PHYSICAL_ROBOT · READ ONLY'
       : runtime?.state === 'READY' && !runtimeError ? 'SIMULATION' : 'UNVERIFIED_RUNTIME';
@@ -562,8 +566,11 @@ async function dashboardView() {
     ['Teleoperation', Object.values(teleop).some((pair) => pair?.deadmanHeld) ? 'ACTIVE · FAKE SIMULATION' : 'INACTIVE', 'Teleoperation available here uses in-memory fake devices only; physical output is disabled.'],
     ['Active experiment', activeRecording?.experimentId || 'NONE REPORTED', activeRecording ? `Bound to local recording ${activeRecording.episodeId}.` : 'No active local recording exposes an experiment context.'],
     ['Recording', recordingState[0], recordingState[1]],
-    ['Emergency stop', estop, 'E-stop state is shown only for the local fake teleoperation pairs; it is not a physical safety circuit.'],
-    ['Hardware output', 'DISABLED', 'hardwareEnabled=false · fakeRobot=true']
+    ['Emergency stop', estop, 'Unified local latch for simulated action sources; it is not a physical safety circuit.'],
+    ['Runtime safety', safety.state ? `${safety.state}${safety.hardwareEnabled ? '' : ' · SIMULATION'}` : 'UNVERIFIED', `Active source: ${safety.activeControlSource || 'none'} · virtual calibration: ${safety.calibrationReady ? 'ready' : 'not ready'} · physical calibration: ${safety.physicalCalibrationReady ? 'ready' : 'not ready'}`],
+    ['Safety watchdog', safety.watchdog || 'UNVERIFIED', `${safety.lastRejectedCommand ? `Last rejected command: ${safety.lastRejectedCommand}` : 'No rejected command recorded.'} · Runtime heartbeat ${safety.runtimeHeartbeatAt ? new Date(safety.runtimeHeartbeatAt * 1000).toLocaleTimeString() : 'unavailable'}`],
+    ['Last safety event', safety.lastEvent || 'No event', safety.lastEventAt ? new Date(safety.lastEventAt * 1000).toLocaleTimeString() : 'No timestamp'],
+    ['Hardware output', safety.hardwareEnabled ? 'ENABLED' : 'DISABLED', `hardwareEnabled=${Boolean(safety.hardwareEnabled)} · fakeRobot=${Boolean(safety.fakeRobot)}`]
   ];
   const table = h('div', { class: 'station-status-list', role: 'list' }, ...rows.map(([label, state, detail]) =>
     h('section', { class: 'station-status-row', role: 'listitem' },
@@ -571,7 +578,10 @@ async function dashboardView() {
       h('span', { class: `station-state ${/VALID|VERIFIED BY DRIVER|ACTIVE · FAKE/.test(state) ? 'is-positive' : /DISABLED|NONE|NOT AVAILABLE|INACTIVE|NOT VERIFIED|ACTION REQUIRED|UNVERIFIED|BLOCKED|LATCHED/.test(state) ? 'is-neutral' : ''}` }, state))));
   sheetEl.replaceChildren(h('div', { class: 'sheet-container station-dashboard' },
     h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'Tổng quan trạm'), h('p', { class: 'view-subline' }, 'Kiểm tra trạng thái thực tế trước khi mở một hoạt động lab.')),
-      h('button', { class: 'ghost', onclick: dashboardView }, 'Làm mới')),
+      h('div', { class: 'safety-dashboard-actions' },
+        h('button', { class: 'danger-action', onclick: async () => { await bridge.safetyEmergencyStop(); await dashboardView(); } }, 'Emergency stop'),
+        h('button', { class: 'ghost', disabled: !safety.emergencyStopLatched, onclick: async () => { if (window.confirm('Reset the latched safety stop? The runtime will remain unarmed.')) { await bridge.safetyReset(true); await dashboardView(); } } }, 'Reset safety latch'),
+        h('button', { class: 'ghost', onclick: dashboardView }, 'Làm mới'))),
     table,
     h('p', { class: 'robot-meta' }, `Runtime kind: ${runtimeKind} · physical motion disabled · diagnostics refreshed ${new Date().toLocaleTimeString()}`)));
 }
@@ -613,6 +623,9 @@ async function robotStationView() {
   let deadmanGeneration = 0;
   let teleopTick = null;
   let teleopSequence = 0;
+  let cartesianTarget = [0.20, 0.00, 0.15];
+  let cartesianStatus = 'Experimental simulation only · checkIk URDF and MuJoCo gripper-frame offset differs by about 19.9 mm; targets are rejected above 20 mm.';
+  let cartesianBusy = false;
   let twinViewer = null;
   let twinCancel = null;
   let twinMounting = false;
@@ -865,7 +878,7 @@ async function robotStationView() {
         h('button', { class: 'ghost', disabled: !activePolicyId, onclick: async () => { try { const p = await bridge.loadPolicy(activePolicyId, 'cpu'); policyStatus = `Loaded ${p.architecture}; prompt ${p.supportsPrompt ? 'supported' : 'ignored'}.`; } catch (e) { policyStatus = e.message; } render(); } }, 'Load'),
         h('button', { class: 'ghost', onclick: async () => { try { await bridge.unloadPolicy(); activePolicyId = ''; policyStatus = 'Policy unloaded.'; importedPolicies = (await bridge.listPolicies()).items || []; } catch (e) { policyStatus = e.message; } render(); } }, 'Unload'),
         h('button', { class: 'ghost', disabled: !activePolicyId, onclick: async () => { try { await bridge.stopPolicy(); policyStatus = 'Inference stop requested; stale results will be discarded.'; } catch (e) { policyStatus = e.message; } render(); } }, 'Stop'),
-        h('button', { class: 'primary', disabled: !activePolicyId || teleopHeld, onclick: async () => { policyStatus = 'Capturing a local MuJoCo observation and running policy inference…'; const status = sheetEl?.querySelector('[data-policy-status]'); if (status) status.textContent = policyStatus; try { const result = await bridge.runPolicy(policyPrompt); policyStatus = `LeRobot inference ran; ${result.promptUsed ? 'prompt used' : 'prompt ignored'}; action validated and applied to MuJoCo (${result.simulation.engine}).`; if (result.simulation?.final && policyTwinViewer) { const frame = parseTwinFrame(result.simulation.final, 'local-so101-simulation'); if (frame) policyTwinViewer.setFrame(frame); } } catch (e) { policyStatus = e.message; } if (status) status.textContent = policyStatus; } }, 'Run policy'),
+        h('button', { class: 'primary', disabled: !activePolicyId || teleopHeld, onclick: async () => { policyStatus = 'Capturing local MuJoCo state/camera and running model inference…'; const status = sheetEl?.querySelector('[data-policy-status]'); if (status) status.textContent = policyStatus; try { const context = activeRecording ? { experimentId: activeRecording.experimentId, episodeId: activeRecording.episodeId } : {}; const result = await bridge.runPolicy(policyPrompt, context); policyStatus = `${result.providerKind} · ${result.model.architecture} · ${result.inferenceLatencyMs} ms · ${result.promptUsed ? 'instruction used' : 'instruction ignored'} · validated SIMULATION proposal recorded locally.`; if (result.simulation?.final && policyTwinViewer) { const frame = parseTwinFrame(result.simulation.final, 'local-so101-simulation'); if (frame) policyTwinViewer.setFrame(frame); } } catch (e) { policyStatus = e.message; } if (status) status.textContent = policyStatus; } }, 'Run policy in simulation'),
         h('button', { class: 'ghost', onclick: async (event) => { event.currentTarget.disabled = true; try { const host = sheetEl.querySelector('[data-policy-twin]'); policyTwinViewer = await mountTwinViewer(host); const latest = host.__lastPolicyFrame; if (latest) policyTwinViewer.setFrame(latest); event.currentTarget.textContent = 'Twin loaded'; } catch (e) { policyStatus = `Policy Twin: ${e.message}`; event.currentTarget.disabled = false; } } }, policyTwinViewer ? 'Twin loaded' : 'Load policy Twin')),
       h('div', { class: 'teleop-twin-viewport', 'data-policy-twin': true }),
       h('div', {}, ...importedPolicies.map((p) => h('p', { class: 'robot-meta' }, `${p.repositoryId}@${p.commit} · ${p.architecture} · prompt ${p.supportsPrompt ? 'supported' : 'not used'} · ${p.status}`))),
@@ -943,6 +956,23 @@ async function robotStationView() {
           } }, twinViewer ? 'Twin loaded' : twinMounting ? 'Loading Twin…' : 'Load SO-101 Twin')),
         h('div', { class: 'teleop-twin-viewport', 'data-fake-twin': true }),
         h('p', { class: 'robot-meta', 'data-follower-feedback': true, 'aria-live': 'polite' }, Object.entries(teleopState.feedback || {}).map(([name, value]) => `${name.replaceAll('_', ' ')} ${Number(value).toFixed(3)} rad`).join(' · ') || 'Follower feedback will appear after an accepted fake command.')));
+    const cartesianPanel = h('section', { class: 'robot-teleop-panel', 'aria-label': 'Cartesian SO-101 simulation control' },
+      h('div', { class: 'robot-section-title' }, h('div', {}, h('h2', {}, 'Experimental Cartesian · checkIk FK/IK'), h('p', {}, 'Simulation only. URDF-based 5-axis IK uses checkIk base_link metres; the gripper holds its simulation value. A systematic 19.9 mm end-effector frame offset is still under review.')),
+        h('span', { class: 'robot-state', 'data-state': 'SIMULATION' }, 'SIMULATION')),
+      h('div', { class: 'teleop-controls' },
+        ...['X (m)', 'Y (m)', 'Z (m)'].map((label, index) => h('label', { class: 'robot-field' }, label,
+          h('input', { type: 'number', min: '-1', max: '1', step: '0.005', value: cartesianTarget[index], 'aria-label': `Cartesian target ${label}`,
+            oninput: (event) => { cartesianTarget[index] = Number(event.target.value); } }))),
+        h('button', { class: 'primary', disabled: cartesianBusy || teleopHeld || !cartesianTarget.every(Number.isFinite), onclick: async () => {
+          cartesianBusy = true; cartesianStatus = 'Solving IK and moving only the local MuJoCo simulation…'; render();
+          try {
+            const result = await bridge.moveCartesianSimulation(cartesianTarget);
+            cartesianStatus = `MuJoCo · checkIk FK verification error ${(result.positionErrorM * 1000).toFixed(2)} mm · ${result.jointPositionsRad.slice(0, 5).map((value) => `${(value * 180 / Math.PI).toFixed(1)}°`).join(' / ')} · physical output disabled.`;
+            if (result.final) { const frame = parseTwinFrame(result.final, 'local-so101-simulation'); if (frame && twinViewer) twinViewer.setFrame(frame); }
+          } catch (error) { cartesianStatus = `Target rejected: ${error.message}`; }
+          finally { cartesianBusy = false; render(); }
+        } }, cartesianBusy ? 'Applying…' : 'Move in simulation')),
+      h('p', { class: 'robot-meta', role: 'status', 'aria-live': 'polite' }, cartesianStatus));
     sheetEl.replaceChildren(h('div', { class: 'sheet-container robot-station' },
       h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'SO-101 connection & calibration'), h('p', { class: 'view-subline' }, 'LeLab-inspired Leader/Follower setup, adapted to VISTA’s local Edge Runtime and security boundaries.'))),
       h('div', { class: 'setup-summary', 'aria-label': 'Physical teleoperation safety lock', 'data-physical-motion-lock': 'disabled' }, h('span', { class: 'setup-badge' }, 'MOTION DISABLED'), ' Physical teleoperation is disabled. Connection and calibration require direct operator confirmation. Fake-device teleoperation runs only in simulation; no physical follower command path is available.'),
@@ -951,7 +981,7 @@ async function robotStationView() {
         h('button', { class: 'ghost', disabled: busy, onclick: scanPorts }, busy ? 'Working…' : 'Scan serial ports')),
       ports.length ? h('p', { class: 'robot-meta' }, `${ports.length} port(s) discovered by pyserial. “Likely robot” is a USB description heuristic, not device verification.`) : h('p', { class: 'robot-empty' }, scanned ? 'No serial ports are currently available. Connect the arm’s USB adapters and scan again.' : 'No device discovery has been run. Scanning does not fabricate ports or open a serial connection.'),
       h('div', { class: 'robot-role-grid' }, ...armSlots.map(rolePanel)),
-      calControls, policyPanel, fakeTeleop,
+      calControls, policyPanel, cartesianPanel, fakeTeleop,
       h('button', { class: 'robot-twin-link', onclick: () => document.querySelector('[data-k="twin"]')?.click() }, 'Open the existing authorized SO-101 Digital Twin')));
   };
   render();
@@ -1058,6 +1088,7 @@ async function settingsView() {
   try {
     const cfg = await bridge.getCfg();
     let iot = await bridge.iotProvisioningStatus();
+    let runtimeDiagnostics = await bridge.edgeDiagnostics().catch((error) => ({ state: 'BLOCKED', error: error.message }));
     if (view !== 'settings') return;
     const endpoint = h('input', {
       id: 'settings-twin-url', type: 'url', value: cfg.twinWsUrl || '',
@@ -1077,6 +1108,21 @@ async function settingsView() {
       finally { save.disabled = false; }
     } }, 'Lưu địa chỉ Twin');
     save.disabled = Boolean(cfg.twinWsManagedByEnvironment);
+    const profileState = h('p', { class: 'faint', role: 'status', 'aria-live': 'polite' },
+      `${runtimeDiagnostics.runtimeProfile || cfg.runtimeProfile || 'simulation'} · ${runtimeDiagnostics.state || 'UNVERIFIED'} · hardware output remains disabled.`);
+    const pythonLabel = h('p', { class: 'faint' }, cfg.roboticsPython ? `Python: ${cfg.roboticsPython}` : 'Python robotics environment: not selected.');
+    const sourceLabel = h('p', { class: 'faint' }, cfg.roboticsSource ? `Edge source: ${cfg.roboticsSource}` : 'Packaged installs need an operator-provided Edge source directory for the optional profile.');
+    const choosePython = h('button', { class: 'ghost', onclick: async () => { try { const selected = await bridge.selectRoboticsPython(); if (selected.roboticsPython) { cfg.roboticsPython = selected.roboticsPython.split(/[\\/]/).pop(); pythonLabel.textContent = `Python: ${cfg.roboticsPython}`; } } catch (error) { profileState.textContent = error.message; } } }, 'Chọn Python 3.12');
+    const chooseSource = h('button', { class: 'ghost', onclick: async () => { try { const selected = await bridge.selectRoboticsSource(); if (selected.roboticsSource) { cfg.roboticsSource = selected.roboticsSource.split(/[\\/]/).pop(); sourceLabel.textContent = `Edge source directory: ${cfg.roboticsSource}`; } } catch (error) { profileState.textContent = error.message; } } }, 'Chọn Edge source');
+    const profileButtons = h('div', { class: 'button-row' });
+    const setProfile = async (profile) => {
+      profileState.textContent = `Validating and switching to ${profile} runtime…`;
+      try { runtimeDiagnostics = await bridge.setRuntimeProfile(profile); profileState.textContent = `${runtimeDiagnostics.runtimeProfile} · ${runtimeDiagnostics.state} · ${runtimeDiagnostics.health?.python || ''} · hardware output remains disabled.`; }
+      catch (error) { profileState.textContent = `Profile switch failed: ${error.message}`; }
+    };
+    profileButtons.append(
+      h('button', { class: 'ghost', disabled: (runtimeDiagnostics.runtimeProfile || cfg.runtimeProfile) === 'simulation', onclick: () => setProfile('simulation') }, 'Simulation (Python 3.11)'),
+      h('button', { class: 'ghost', disabled: (runtimeDiagnostics.runtimeProfile || cfg.runtimeProfile) === 'robotics', onclick: () => setProfile('robotics') }, 'Robotics (Python 3.12)'));
     const iotFiles = h('div', { class: 'station-status-list', role: 'list' });
     const renderIot = () => {
       const fileRow = (kind, label, filename) => h('section', { class: 'station-status-row', role: 'listitem' },
@@ -1115,6 +1161,11 @@ async function settingsView() {
         h('h2', {}, 'Education API'),
         h('p', {}, cfg.educationApi || 'Chưa cấu hình'),
         h('p', { class: 'faint' }, cfg.mock ? 'Demo fixture · không kết nối dữ liệu học sinh thật.' : 'Cấu hình bởi VISTA_EDUCATION_API.')),
+      h('section', { class: 'detail-panel', 'aria-label': 'Edge runtime profile' },
+        h('h2', {}, 'Edge Runtime profile'),
+        h('p', {}, 'Chỉ một Edge Runtime được chạy tại một thời điểm. Đổi profile sẽ shutdown runtime hiện tại rồi khởi động lại cùng safety authority.'),
+        profileState, pythonLabel, sourceLabel, h('div', { class: 'button-row' }, choosePython, chooseSource), profileButtons,
+        h('p', { class: 'faint' }, 'Robotics profile chỉ xác minh Python 3.12, CPU Torch và LeRobot import. Kết nối arm, calibration write và actuator output vẫn bị khóa theo mặc định.')),
       h('section', { class: 'detail-panel settings-endpoint', 'aria-label': 'Digital Twin' },
         h('h2', {}, 'SO-101 Digital Twin'),
         h('label', { for: 'settings-twin-url' }, 'Địa chỉ WebSocket do người vận hành cung cấp'),

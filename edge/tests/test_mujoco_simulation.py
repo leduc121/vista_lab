@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from edge.mujoco_simulation import MuJoCoSimulation
+from edge.mujoco_simulation import JOINTS, MuJoCoSimulation
 
 
 @unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo extra is not installed")
@@ -56,11 +56,16 @@ class MuJoCoSimulationTests(unittest.TestCase):
 
     def test_policy_action_is_bounds_checked_then_applied_to_mujoco_only(self):
         frames = []
+        guarded = []
+        self.simulation.action_guard = lambda positions, limits, sink: (guarded.append((positions, limits)), sink())
         result = self.simulation.execute_policy_action([0, -0.55, 1.05, -0.5, 0, -0.1], frames.append)
+        self.simulation.action_guard = None
         self.assertEqual(result["engine"], "MuJoCo")
         self.assertFalse(result["motionEnabled"])
         self.assertGreater(len(frames), 0)
         self.assertEqual(frames[-1]["controller_id"], "local-policy-mujoco")
+        self.assertTrue(guarded)
+        self.assertEqual(tuple(guarded[0][1]), JOINTS)
         with self.assertRaisesRegex(ValueError, "outside MuJoCo actuator limits"):
             self.simulation.execute_policy_action([999, 0, 0, 0, 0, 0])
 

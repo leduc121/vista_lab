@@ -1,0 +1,30 @@
+[project]
+name = "vista-so101-robot-runtime"
+version = "0.1.0"
+description = "Optional Python 3.12 CPU runtime for VISTA SO-101 hardware acceptance"
+requires-python = "==3.12.*"
+dependencies = [
+  "lerobot[feetech]==0.6.1",
+  "torch==2.7.1+cpu",
+  "torchvision==0.22.1+cpu",
+  "numpy==2.2.6",
+  "mujoco==3.17.0",
+  "paho-mqtt==2.2.0",
+  "pyserial==3.5",
+  "pyinstaller==6.19.0",
+  "cmake==3.31.6",
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }

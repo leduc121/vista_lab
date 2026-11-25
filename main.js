@@ -3,6 +3,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const https = require('node:https');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { Readable } = require('node:stream');
 const { createClient } = require('./api');
 const { secureStorageAvailable: storageAvailable } = require('./session-security');
@@ -11,6 +13,7 @@ const { EdgeRobotRuntime } = require('./robot-runtime');
 const { EdgeSupervisor } = require('./edge-supervisor');
 const { DeviceProvisioning } = require('./device-provisioning');
 const { RecordingManager } = require('./recording-manager');
+const { PolicyActionRecorder } = require('./policy-action-recorder');
 
 const defaults = {
   mock: process.env.VISTA_DESKTOP_DEMO === '1',
@@ -61,7 +64,7 @@ const loadConfig = () => {
     try { savedTwinWsUrl = validateTwinWsUrl(saved.twinWsUrl); } catch {}
     const iot = { ...defaults.iot, ...(saved.iot && typeof saved.iot === 'object' ? saved.iot : {}) };
     iot.enabled = false;
-    return { ...defaults, iot, rememberedUsername: typeof saved.rememberedUsername === 'string' ? saved.rememberedUsername.slice(0, 80) : '', deviceMappings: normalizeDeviceMappings(saved.deviceMappings), twinWsUrl: envUrl ? twinWsUrl : savedTwinWsUrl, twinWsConfigurationError, mujocoModelPath: typeof saved.mujocoModelPath === 'string' ? saved.mujocoModelPath : '', mock: defaults.mock };
+    return { ...defaults, iot, rememberedUsername: typeof saved.rememberedUsername === 'string' ? saved.rememberedUsername.slice(0, 80) : '', deviceMappings: normalizeDeviceMappings(saved.deviceMappings), twinWsUrl: envUrl ? twinWsUrl : savedTwinWsUrl, twinWsConfigurationError, mujocoModelPath: typeof saved.mujocoModelPath === 'string' ? saved.mujocoModelPath : '', runtimeProfile: saved.runtimeProfile === 'robotics' ? 'robotics' : 'simulation', roboticsPython: typeof saved.roboticsPython === 'string' ? saved.roboticsPython : '', roboticsSource: typeof saved.roboticsSource === 'string' ? saved.roboticsSource : '', mock: defaults.mock };
   } catch { return { ...defaults, twinWsUrl, twinWsConfigurationError }; }
 };
 
@@ -72,6 +75,7 @@ let activeDraftOwner = null;
 const edgeRuntime = new EdgeRobotRuntime();
 let edgeSupervisor;
 let deviceProvisioning;
+let policyActionRecorder;
 
 // Work around Chromium GPU-process startup failures on affected Linux hosts.
 // This is an operator opt-in; it does not disable Electron's sandbox or
@@ -146,7 +150,8 @@ function rememberDraftOwner(profile) {
 app.whenReady().then(() => {
   config = loadConfig();
   client = createClient(config);
-  edgeSupervisor = new EdgeSupervisor({ app, logPath: path.join(app.getPath('userData'), 'logs', 'edge-runtime.jsonl'), modelPath: config.mujocoModelPath });
+  edgeSupervisor = new EdgeSupervisor({ app, logPath: path.join(app.getPath('userData'), 'logs', 'edge-runtime.jsonl'), modelPath: config.mujocoModelPath,
+    runtimeProfile: config.runtimeProfile, roboticsPython: config.roboticsPython, roboticsSource: config.roboticsSource });
   deviceProvisioning = new DeviceProvisioning({ safeStorage, storageDir: path.join(app.getPath('userData'), 'device-identity') });
   const recordings = new RecordingManager(path.join(app.getPath('userData'), 'recordings'));
   let recordingTimer = null;
@@ -165,7 +170,10 @@ app.whenReady().then(() => {
     twinWsConfigurationError: config.twinWsConfigurationError,
     twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL),
     rememberedUsername: config.rememberedUsername,
-    persistentSession: secureStorageAvailable()
+    persistentSession: secureStorageAvailable(),
+    runtimeProfile: edgeSupervisor.runtimeProfile,
+    roboticsPython: config.roboticsPython ? path.basename(config.roboticsPython) : '',
+    roboticsSource: config.roboticsSource ? path.basename(config.roboticsSource) : ''
   }));
   registerHandle('edge:status', () => edgeRuntime.status());
   const requireLocalSession = () => {
@@ -181,15 +189,64 @@ app.whenReady().then(() => {
   registerHandle('policy:load', async (policyId, device) => { requireLocalSession(); return edgeSupervisor.request('policy_load', { policyId, device: device || 'cpu' }, 120000); });
   registerHandle('policy:unload', async () => { requireLocalSession(); return edgeSupervisor.request('policy_unload'); });
   registerHandle('policy:stop', async () => { requireLocalSession(); return edgeSupervisor.request('policy_stop'); });
-  registerHandle('policy:run', async (prompt) => {
+  policyActionRecorder = new PolicyActionRecorder(app.getPath('userData'));
+  registerHandle('policy:run', async (prompt, context = {}) => {
     requireLocalSession();
-    return edgeSupervisor.request('policy_run', { prompt: typeof prompt === 'string' ? prompt : '' }, 120000,
+    if (typeof prompt !== 'string' || prompt.length > 1000) throw new Error('VLA instruction must be at most 1000 characters.');
+    if (!context || typeof context !== 'object' || Array.isArray(context) ||
+        Object.keys(context).some((key) => !['experimentId', 'attemptId', 'episodeId'].includes(key)) ||
+        Object.values(context).some((value) => typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))) {
+      throw new Error('VLA experiment context must contain only valid experiment, attempt, or episode UUIDs.');
+    }
+    const result = await edgeSupervisor.request('policy_run', { prompt, experiment: context }, 30000,
       (frame) => { if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('policy:frame', frame); });
+    result.actionRecord = policyActionRecorder.record(result, prompt, context);
+    return result;
   });
   const stopFakeTeleoperation = () => {
     for (const pairId of ['pair-a', 'pair-b']) void edgeSupervisor.request('teleop_disconnect', { pairId }).catch(() => {});
   };
   registerHandle('edge:diagnostics', async () => { requireLocalSession(); return edgeSupervisor.diagnostics(); });
+  registerHandle('runtime:select-python', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], title: 'Select isolated Python 3.12 robotics environment executable' });
+    if (!result.canceled && result.filePaths?.[0]) config.roboticsPython = result.filePaths[0];
+    return { roboticsPython: config.roboticsPython };
+  });
+  registerHandle('runtime:select-source', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: 'Select VISTA Edge source root (contains edge/runtime.py)' });
+    if (!result.canceled && result.filePaths?.[0]) config.roboticsSource = result.filePaths[0];
+    return { roboticsSource: config.roboticsSource };
+  });
+  registerHandle('runtime:profile', async (profile) => {
+    requireLocalSession();
+    if (!['simulation', 'robotics'].includes(profile)) throw new Error('Choose simulation or robotics runtime profile.');
+    const runtimeCheck = await edgeSupervisor.diagnostics();
+    if (Object.values(runtimeCheck.status?.arms || {}).some((arm) => arm?.connected) || runtimeCheck.status?.safety?.state === 'EXECUTING') throw new Error('Runtime profile cannot change while an arm is connected or execution is active. Disconnect and stop first.');
+    if (profile === 'robotics') {
+      const python = config.roboticsPython;
+      const source = config.roboticsSource || (!app.isPackaged ? __dirname : '');
+      if (!python || !fs.existsSync(python) || !source || !fs.existsSync(path.join(source, 'edge', 'runtime.py'))) throw new Error('Select a valid isolated Python and VISTA Edge source tree first.');
+      const run = promisify(execFile);
+      try {
+        const probe = await run(python, ['-c', "import sys, json, torch, numpy, lerobot, mujoco, serial; from lerobot.robots.so_follower import SO101Follower; from lerobot.teleoperators.so_leader import SO101Leader; print(json.dumps({'python': list(sys.version_info[:3]), 'torch': torch.__version__, 'cuda': torch.version.cuda, 'lerobot': lerobot.__version__, 'numpy': numpy.__version__, 'mujoco': mujoco.__version__, 'cudaAvailable': torch.cuda.is_available()}))"], { timeout: 30000, windowsHide: true, maxBuffer: 20000 });
+        const environment = JSON.parse(probe.stdout.trim().split(/\r?\n/).at(-1));
+        if (environment.python[0] !== 3 || environment.python[1] !== 12 || environment.torch !== '2.7.1+cpu' || environment.cuda !== null || environment.cudaAvailable || environment.lerobot !== '0.6.1' || environment.numpy !== '2.2.6' || environment.mujoco !== '3.17.0') {
+          throw new Error(`Expected Python 3.12, Torch 2.7.1 CPU, LeRobot 0.6.1, NumPy 2.2.6 and MuJoCo 3.17.0; found ${JSON.stringify(environment)}.`);
+        }
+      } catch (error) { throw new Error(`Robotics environment validation failed: ${error.message}`); }
+      config.roboticsPython = python; config.roboticsSource = source;
+    }
+    await edgeSupervisor.stop();
+    edgeSupervisor.runtimeProfile = profile;
+    edgeSupervisor.roboticsPython = config.roboticsPython;
+    edgeSupervisor.roboticsSource = config.roboticsSource;
+    config.runtimeProfile = profile;
+    fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, deviceMappings: config.deviceMappings, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '', iot: config.iot, runtimeProfile: config.runtimeProfile, roboticsPython: config.roboticsPython, roboticsSource: config.roboticsSource }), { mode: 0o600 });
+    fs.chmodSync(configPath(), 0o600);
+    if (!edgeSupervisor.start()) throw new Error(edgeSupervisor.startError || 'Selected runtime profile failed to start.');
+    return await edgeSupervisor.diagnostics();
+  });
   registerHandle('recording:list', () => { requireLocalSession(); return recordings.list(); });
   registerHandle('recording:get', (episodeId) => { requireLocalSession(); return recordings.get(episodeId); });
   registerHandle('recording:start', async ({ experimentId, slot } = {}) => {
@@ -287,6 +344,14 @@ app.whenReady().then(() => {
   registerHandle('edge:calibration-complete-step', async () => { requireLocalSession(); return edgeSupervisor.request('calibration_complete_step'); });
   registerHandle('edge:calibration-stop', async () => { requireLocalSession(); return edgeSupervisor.request('calibration_stop', {}, 10000); });
   registerHandle('edge:teleop-status', async () => { requireLocalSession(); return edgeSupervisor.request('teleop_status'); });
+  registerHandle('edge:safety-status', async () => { requireLocalSession(); return edgeSupervisor.request('safety_status'); });
+  // A stop request is always safe and must remain available after session expiry.
+  registerHandle('edge:safety-estop', async () => edgeSupervisor.request('safety_estop', {}));
+  registerHandle('edge:safety-reset', async (confirmed) => {
+    requireLocalSession();
+    if (confirmed !== true) throw new Error('Safety reset requires explicit operator confirmation.');
+    return edgeSupervisor.request('safety_reset', { confirmed: true });
+  });
   registerHandle('edge:teleop-configure', async (pairId, confirmed) => {
     requireLocalSession();
     if (!['pair-a', 'pair-b'].includes(pairId)) throw new Error('Select one of the two fake simulation pairs.');
@@ -362,18 +427,44 @@ app.whenReady().then(() => {
     return edgeSupervisor.request('resume_simulation');
   });
   registerHandle('provisioning:status', () => deviceProvisioning.status());
-  const iotProvisioningStatus = () => ({
+  const iotProvisioningStatus = async () => {
+    const certificateReady = Boolean(config.iot.caPath && config.iot.certificatePath && config.iot.privateKeyPath
+      && [config.iot.caPath, config.iot.certificatePath, config.iot.privateKeyPath].every((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } })
+      && process.platform !== 'win32' && (() => { try { return (fs.statSync(config.iot.privateKeyPath).mode & 0o077) === 0; } catch { return false; } })());
+    let runtimeStatus = { initialized: false, connected: false, error: 'Provision externally supplied IoT certificates to initialize the runtime.' };
+    if (certificateReady) {
+      try {
+        runtimeStatus = await edgeSupervisor.request('mqtt_status');
+        if (!runtimeStatus.initialized) {
+          await edgeSupervisor.request('mqtt_initialize', {
+            host: config.iot.endpoint, thingName: config.iot.thingName, robotId: config.iot.robotId,
+            caFile: config.iot.caPath, certFile: config.iot.certificatePath, keyFile: config.iot.privateKeyPath,
+            dedupePath: path.join(app.getPath('userData'), 'iot-command-dedupe.json'),
+            port: config.iot.port, topicPrefix: config.iot.topicPrefix, runtimeKind: 'PHYSICAL_ROBOT'
+          });
+          runtimeStatus = await edgeSupervisor.request('mqtt_status');
+        }
+      } catch (error) { runtimeStatus = { initialized: false, connected: false, error: error.message }; }
+    }
+    return {
     endpoint: config.iot.endpoint, port: config.iot.port, thingName: config.iot.thingName,
     robotId: config.iot.robotId, topicPrefix: config.iot.topicPrefix, enabled: false,
-    certificateReady: Boolean(config.iot.caPath && config.iot.certificatePath && config.iot.privateKeyPath
-      && [config.iot.caPath, config.iot.certificatePath, config.iot.privateKeyPath].every((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } })
-      && process.platform !== 'win32' && (() => { try { return (fs.statSync(config.iot.privateKeyPath).mode & 0o077) === 0; } catch { return false; } })()),
+    certificateReady, runtime: runtimeStatus,
     caFile: config.iot.caPath ? path.basename(config.iot.caPath) : null,
     certificateFile: config.iot.certificatePath ? path.basename(config.iot.certificatePath) : null,
     privateKeyReference: config.iot.privateKeyPath ? path.basename(config.iot.privateKeyPath) : null,
     productionDispatch: false
-  });
+    };
+  };
   registerHandle('iot:status', iotProvisioningStatus);
+  registerHandle('iot:runtime-connect', async () => {
+    requireLocalSession();
+    if (config.iot.enabled !== true || process.env.VISTA_IOT_ENABLED !== 'true') throw new Error('Production MQTT is disabled by operator policy.');
+    const status = await iotProvisioningStatus();
+    if (!status.certificateReady) throw new Error('Provision valid externally issued IoT certificates before connecting.');
+    return edgeSupervisor.request('mqtt_connect');
+  });
+  registerHandle('iot:runtime-disconnect', async () => edgeSupervisor.request('mqtt_disconnect'));
   registerHandle('iot:select-file', async (kind) => {
     const key = { ca: 'caPath', certificate: 'certificatePath', privateKey: 'privateKeyPath' }[kind];
     if (!key) throw new Error('Select a supported certificate file role.');
@@ -384,7 +475,7 @@ app.whenReady().then(() => {
     if (kind === 'privateKey' && (process.platform === 'win32' || (fs.statSync(selected).mode & 0o077))) throw new Error('Private key file must have owner-only permissions (0600); Windows ACL validation is not available.');
     config.iot[key] = selected;
     fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, deviceMappings: config.deviceMappings, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '', iot: config.iot }), { mode: 0o600 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, deviceMappings: config.deviceMappings, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '', iot: config.iot, runtimeProfile: config.runtimeProfile, roboticsPython: config.roboticsPython, roboticsSource: config.roboticsSource }), { mode: 0o600 });
     fs.chmodSync(configPath(), 0o600);
     return iotProvisioningStatus();
   });
@@ -409,6 +500,12 @@ app.whenReady().then(() => {
     return edgeSupervisor.request('simulate', { attempt, authorization, command, confirmation }, 5 * 60_000,
       (frame) => { if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('simulation:frame', frame); });
   });
+  registerHandle('edge:cartesian-move', async (position) => {
+    requireLocalSession();
+    if (!Array.isArray(position) || position.length !== 3 || position.some((value) => typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1)) throw new Error('Cartesian target must contain three finite metre values within the local workspace envelope.');
+    return edgeSupervisor.request('cartesian_move', { position }, 30000,
+      (frame) => { if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('simulation:frame', frame); });
+  });
   registerHandle('cfg:set', (patch = {}) => {
     const activeSession = client.getSession?.();
     const next = { ...config };
@@ -418,11 +515,11 @@ app.whenReady().then(() => {
     if (typeof patch.twinWsUrl === 'string') next.twinWsUrl = patch.twinWsUrl.trim() ? validateTwinWsUrl(patch.twinWsUrl) : '';
     config = next;
     fs.mkdirSync(path.dirname(configPath()), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, deviceMappings: config.deviceMappings, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '', iot: config.iot }), { mode: 0o600 });
+    fs.writeFileSync(configPath(), JSON.stringify({ rememberedUsername: config.rememberedUsername, deviceMappings: config.deviceMappings, twinWsUrl: config.twinWsUrl, mujocoModelPath: config.mujocoModelPath || '', iot: config.iot, runtimeProfile: config.runtimeProfile, roboticsPython: config.roboticsPython, roboticsSource: config.roboticsSource }), { mode: 0o600 });
     fs.chmodSync(configPath(), 0o600);
     client = createClient(config);
     if (activeSession) client.setSession(activeSession);
-    return { mock: config.mock, fakeRobot: true, hardwareEnabled: false, deviceMappings: config.deviceMappings, educationApi: config.educationApi, twinWsUrl: config.twinWsUrl, twinWsConfigurationError: config.twinWsConfigurationError, twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL), rememberedUsername: config.rememberedUsername, persistentSession: secureStorageAvailable() };
+    return { mock: config.mock, fakeRobot: true, hardwareEnabled: false, deviceMappings: config.deviceMappings, educationApi: config.educationApi, twinWsUrl: config.twinWsUrl, twinWsConfigurationError: config.twinWsConfigurationError, twinWsManagedByEnvironment: Boolean(process.env.VISTA_TWIN_WS_URL), rememberedUsername: config.rememberedUsername, persistentSession: secureStorageAvailable(), runtimeProfile: config.runtimeProfile, roboticsPython: config.roboticsPython ? path.basename(config.roboticsPython) : '', roboticsSource: config.roboticsSource ? path.basename(config.roboticsSource) : '' };
   });
 
   registerHandle('session:restore', async () => {

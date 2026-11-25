@@ -87,10 +87,12 @@ class FakeFollowerOutput:
 
 
 class PairTeleoperation:
-    def __init__(self, pair_id: str, monotonic: Callable[[], float], wall_clock: Callable[[], float]):
+    def __init__(self, pair_id: str, monotonic: Callable[[], float], wall_clock: Callable[[], float],
+                 action_validator: Callable[[str, dict[str, float], int, float, Callable[[], None]], None] | None = None):
         self.pair_id = pair_id
         self.monotonic = monotonic
         self.wall_clock = wall_clock
+        self.action_validator = action_validator
         self._use_timer = monotonic is time.monotonic
         self._lock = threading.RLock()
         self._watchdog: threading.Timer | None = None
@@ -232,7 +234,13 @@ class PairTeleoperation:
                 self._fault("velocity_limit")
                 return self._rejected("velocity_limit")
         try:
-            self.follower.apply(mapped)  # type: ignore[union-attr]
+            if self.action_validator:
+                self.action_validator(self.pair_id, mapped, sequence, float(timestamp),
+                                      lambda: self.follower.apply(mapped))  # type: ignore[union-attr]
+            else:
+                self.follower.apply(mapped)  # type: ignore[union-attr]
+        except PermissionError as error:
+            return self._rejected(str(error))
         except (ValueError, ConnectionError):
             self._fault("connection_lost")
             return self._rejected("connection_lost")
@@ -373,10 +381,11 @@ class PairTeleoperation:
 class Teleoperation:
     """Pair registry and exclusive ownership of virtual fake-device ports."""
 
-    def __init__(self, monotonic: Callable[[], float] = time.monotonic, wall_clock: Callable[[], float] = time.time):
+    def __init__(self, monotonic: Callable[[], float] = time.monotonic, wall_clock: Callable[[], float] = time.time,
+                 action_validator: Callable[[str, dict[str, float], int, float, Callable[[], None]], None] | None = None):
         self.monotonic = monotonic
         self.wall_clock = wall_clock
-        self.pairs = {pair_id: PairTeleoperation(pair_id, monotonic, wall_clock) for pair_id in PAIR_IDS}
+        self.pairs = {pair_id: PairTeleoperation(pair_id, monotonic, wall_clock, action_validator) for pair_id in PAIR_IDS}
         self.port_owners: dict[str, str] = {}
 
     def _pair(self, pair_id: object) -> PairTeleoperation:

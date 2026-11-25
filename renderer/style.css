@@ -1637,6 +1637,8 @@ button.btn-row-action:disabled {
 .station-state { justify-self:end; color:var(--text); font:500 11px/1.3 'IBM Plex Mono',monospace; text-align:right; }
 .station-state.is-positive { color:#42bd84; }
 .station-state.is-neutral { color:var(--muted); }
+.safety-dashboard-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px; }
+.safety-dashboard-actions .danger-action { min-height:38px; }
 @media (max-width:700px) { .station-status-row { grid-template-columns:1fr; gap:8px; } .station-state { justify-self:start; text-align:left; } }
 .setup-state-panel { display:flex; align-items:flex-start; gap:12px; padding:12px 14px; border-radius:10px; background:#172021; }
 .setup-state-panel p,.setup-controls p { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }

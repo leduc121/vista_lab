@@ -172,6 +172,8 @@ async function main() {
   const robotScreen = await page.$eval('.robot-station', (el) => el.textContent);
   if (!robotScreen.includes('Leader') || !robotScreen.includes('Follower') || !robotScreen.includes('Physical teleoperation is disabled')) throw new Error('Robot station did not render distinct roles, calibration guidance, and the physical motion lock.');
   const robotAcceptance = await page.$eval('.robot-station', (station) => ({
+    cartesianPanel: station.querySelector('[aria-label="Cartesian SO-101 simulation control"]')?.textContent,
+    cartesianInputs: station.querySelectorAll('[aria-label^="Cartesian target "]').length,
     rolePanels: [...station.querySelectorAll('.robot-role-panel')].map((panel) => ({
       label: panel.getAttribute('aria-label'),
       portSelector: panel.querySelector('select[aria-label$="serial port"]')?.getAttribute('aria-label'),
@@ -193,6 +195,12 @@ async function main() {
     deadmanDisabled: station.querySelector('[aria-label="Fake-device Leader Follower teleoperation"] [data-deadman]')?.disabled,
     estopDisabled: [...station.querySelectorAll('[aria-label="Fake-device Leader Follower teleoperation"] button')].find((button) => button.textContent.includes('Emergency stop'))?.disabled
   }));
+  if (!robotAcceptance.cartesianPanel?.includes('checkIk FK/IK') || robotAcceptance.cartesianInputs !== 3 || !robotAcceptance.cartesianPanel.includes('SIMULATION')) {
+    throw new Error(`checkIk Cartesian workspace is incomplete or mislabeled: ${JSON.stringify(robotAcceptance)}`);
+  }
+  await (await page.$('[aria-label="Cartesian SO-101 simulation control"]')).screenshot({ path: path.join(out, 'checkik-cartesian-panel.png') });
+  await page.click('[aria-label="Cartesian SO-101 simulation control"] button.primary');
+  await page.waitForFunction(() => document.querySelector('[aria-label="Cartesian SO-101 simulation control"]')?.textContent.includes('Browser preview cannot run MuJoCo'));
   if (robotAcceptance.rolePanels.length !== 4 || robotAcceptance.rolePanels.some((role, index) => role.label !== ['Leader A device', 'Follower A device', 'Leader B device', 'Follower B device'][index] || !role.portSelector || !role.connectionState || role.jointRows !== 6)) {
     throw new Error(`Robot Station role selection/status/joint feedback is incomplete: ${JSON.stringify(robotAcceptance.rolePanels)}`);
   }

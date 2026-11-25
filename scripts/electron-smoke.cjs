@@ -11,6 +11,7 @@ const puppeteer = require('puppeteer-core');
 
 const root = path.join(__dirname, '..');
 const artifacts = path.join(os.tmpdir(), 'vista-electron-smoke');
+const evidenceSuffix = process.env.VISTA_SMOKE_EVIDENCE_SUFFIX ? `-${process.env.VISTA_SMOKE_EVIDENCE_SUFFIX.replace(/[^A-Za-z0-9_-]/g, '')}` : '';
 let profile;
 let child;
 let browser;
@@ -53,6 +54,7 @@ async function run() {
   profile = fs.mkdtempSync(path.join(os.tmpdir(), 'vista-electron-smoke-profile-'));
   const port = await reservePort();
   const electronPath = require('electron');
+  const packagedExecutable = process.env.VISTA_SMOKE_EXECUTABLE;
   const { ELECTRON_RUN_AS_NODE: _runAsNode, ...env } = process.env;
   Object.assign(env, {
     VISTA_DESKTOP_DEMO: '1',
@@ -60,7 +62,16 @@ async function run() {
     NODE_ENV: 'test',
     VISTA_DESKTOP_TEST_USER_DATA: path.join(profile, 'user-data')
   });
-  child = spawn(electronPath, [`--remote-debugging-port=${port}`, root], { cwd: root, env, stdio: ['ignore', 'ignore', 'pipe'] });
+  if (process.env.VISTA_SMOKE_ROBOTICS_PYTHON && process.env.VISTA_SMOKE_ROBOTICS_SOURCE) {
+    fs.mkdirSync(env.VISTA_DESKTOP_TEST_USER_DATA, { recursive: true });
+    fs.writeFileSync(path.join(env.VISTA_DESKTOP_TEST_USER_DATA, 'config.json'), JSON.stringify({
+      runtimeProfile: 'robotics', roboticsPython: process.env.VISTA_SMOKE_ROBOTICS_PYTHON,
+      roboticsSource: process.env.VISTA_SMOKE_ROBOTICS_SOURCE
+    }), { mode: 0o600 });
+  }
+  child = spawn(packagedExecutable || electronPath,
+    [`--remote-debugging-port=${port}`, ...(packagedExecutable ? [] : [root])],
+    { cwd: root, env, stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-12000); });
   child.on('error', (error) => errors.push(`Electron process: ${error.message}`));
@@ -115,9 +126,22 @@ async function run() {
     enabledMotionButtons: [...document.querySelectorAll('button')].filter((button) => /physical robot|move follower|robot motion/i.test(button.textContent) && !button.disabled).map((button) => button.textContent.trim())
   }));
   if (!physicalControl.lock || physicalControl.enabledMotionButtons.length) throw new Error(`Unexpected physical motion UI state: ${JSON.stringify(physicalControl)}`);
+  await page.screenshot({ path: path.join(artifacts, `electron-workspace${evidenceSuffix}.png`), fullPage: false });
+  await page.click('[data-k="settings"]');
+  await page.waitForFunction(() => [...document.querySelectorAll('h2')].some((heading) => heading.textContent === 'Edge Runtime profile'));
+  const runtimeControls = await page.evaluate(() => ({
+    simulation: [...document.querySelectorAll('button')].some((button) => button.textContent.includes('Simulation (Python 3.11)')),
+    robotics: [...document.querySelectorAll('button')].some((button) => button.textContent.includes('Robotics (Python 3.12)')),
+    locked: document.body.innerText.includes('hardware output remains disabled'),
+    profileStatus: [...document.querySelectorAll('section')].find((section) => section.querySelector('h2')?.textContent === 'Edge Runtime profile')?.querySelector('[role="status"]')?.textContent || ''
+  }));
+  if (!runtimeControls.simulation || !runtimeControls.robotics || !runtimeControls.locked) throw new Error(`Runtime profile controls are incomplete or unsafe: ${JSON.stringify(runtimeControls)}`);
+  const expectedProfile = process.env.VISTA_SMOKE_EXPECT_PROFILE || 'simulation';
+  if (!runtimeControls.profileStatus.toLowerCase().startsWith(`${expectedProfile} · ready`)) throw new Error(`Packaged runtime profile did not become ready: ${runtimeControls.profileStatus}`);
+  mark('runtime profile controls rendered with hardware output locked');
   if (errors.length) throw new Error(`Native Electron renderer errors: ${errors.join('; ')}`);
-  await page.screenshot({ path: path.join(artifacts, 'electron-workspace.png'), fullPage: false });
-  console.log(`PASS: native Electron key workflow; screenshot at ${path.join(artifacts, 'electron-workspace.png')}`);
+  await page.screenshot({ path: path.join(artifacts, `electron-runtime-profile${evidenceSuffix}.png`), fullPage: false });
+  console.log(`PASS: native Electron key workflow; screenshots at ${artifacts}`);
 }
 
 async function diagnose(error) {

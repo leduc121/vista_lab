@@ -33,6 +33,11 @@ def main() -> int:
         "--collect-all", "mujoco", "--collect-all", "serial",
         "--collect-all", "paho", str(ROOT / "edge" / "runtime.py"),
     ]
+    data_separator = ";" if sys.platform == "win32" else ":"
+    command[command.index(str(ROOT / "edge" / "runtime.py")):command.index(str(ROOT / "edge" / "runtime.py"))] = [
+        "--add-data", f"{ROOT / 'edge' / 'checkik_kinematics' / 'so101_new_calib.urdf'}{data_separator}edge/checkik_kinematics",
+        "--add-data", f"{ROOT / 'models' / 'so101'}{data_separator}models/so101",
+    ]
     subprocess.run(command, cwd=ROOT, check=True)
     executable = DIST / ("vista-edge-runtime.exe" if sys.platform == "win32" else "vista-edge-runtime")
     if not executable.is_file():

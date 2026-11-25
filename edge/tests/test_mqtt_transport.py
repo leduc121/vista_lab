@@ -2,6 +2,7 @@ import json, os, tempfile, time, types, unittest
 from pathlib import Path
 from unittest.mock import patch
 from edge.mqtt_transport import MqttTransport
+from edge.safety_controller import LocalSafetyController
 
 ROBOT = "f1c066c4-b5f2-45c4-b933-f034f3824dd9"
 THING = "vista-demo-" + ROBOT
@@ -20,14 +21,21 @@ class FakeClient:
     def publish(self, topic, payload, qos, retain): self.published.append((topic,json.loads(payload),qos,retain)); return types.SimpleNamespace(rc=0)
     def disconnect(self): pass
 
+class TestSafetyGate:
+    def __init__(self, ready=True): self.ready=ready; self.acquired=[]; self.released=[]
+    def mqtt_ready(self): return self.ready
+    def acquire(self, resource, source, **kwargs): self.acquired.append((resource,source,kwargs))
+    def release(self, resource, **kwargs): self.released.append((resource,kwargs))
+
 class MqttTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.paths=[Path(self.temp.name)/n for n in ("ca.pem","device.crt","device.key")]
         for p in self.paths: p.write_text("test fixture"); os.chmod(p,0o600)
         self.called=[]
+        self.safety=TestSafetyGate()
         self.transport=MqttTransport(host="example-ats.iot.test",thing_name=THING,robot_id=ROBOT,
             ca_file=str(self.paths[0]),cert_file=str(self.paths[1]),key_file=str(self.paths[2]),
-            authorize=lambda _: True,safety_ready=lambda: True,on_command=lambda p:self.called.append(p["runId"]),
+            authorize=lambda _: True,safety_ready=lambda: True,safety_controller=self.safety,on_command=lambda p:self.called.append(p["runId"]),
             dedupe_path=str(Path(self.temp.name)/"seen.json"),client_factory=FakeClient)
         self.module=types.SimpleNamespace(CallbackAPIVersion=types.SimpleNamespace(VERSION2=2),MQTTv311=4)
         self.modules={"paho":types.ModuleType("paho"),"paho.mqtt":types.ModuleType("paho.mqtt"),"paho.mqtt.client":self.module}
@@ -50,6 +58,8 @@ class MqttTests(unittest.TestCase):
         envelope=self.envelope(); msg=types.SimpleNamespace(topic=self.transport.topics["commands"],payload=json.dumps(envelope).encode(),retain=False)
         self.transport._on_message(c,None,msg)
         self.assertEqual(self.called,["run-1"])
+        self.assertEqual(self.safety.acquired[0][1],"MQTT")
+        self.assertEqual(len(self.safety.released),1)
         events=[p[1] for p in c.published if p[1].get("commandId")==CMD]
         self.assertEqual([e["eventId"] for e in events],[f"{CMD}:ack:accepted",f"{CMD}:status:executing",f"{CMD}:status:completed"])
         self.assertEqual([e["sequence"] for e in events],[envelope["sequence"],envelope["sequence"]+1,envelope["sequence"]+2])
@@ -75,6 +85,10 @@ class MqttTests(unittest.TestCase):
     def test_transport_requires_explicit_opt_in_and_correct_identity(self):
         with patch.dict(os.environ,{},clear=True), patch.dict("sys.modules",self.modules):
             with self.assertRaises(PermissionError): self.transport.connect()
+        self.transport.safety_controller=None
+        with patch.dict(os.environ,{"VISTA_IOT_ENABLED":"true"}), patch.dict("sys.modules",self.modules):
+            with self.assertRaisesRegex(PermissionError,"LocalSafetyController"):
+                self.transport.connect()
         with self.assertRaises(ValueError): MqttTransport(host="a",thing_name=THING,robot_id=THING,ca_file="",cert_file="",key_file="",authorize=lambda _:True,safety_ready=lambda:True,on_command=lambda _:None,dedupe_path="x")
     @unittest.skipIf(os.name=="nt","Windows key ACL validation is fail closed")
     def test_invalid_joint_payload_never_reaches_runtime(self):
@@ -106,14 +120,18 @@ class MqttTests(unittest.TestCase):
 
     @unittest.skipIf(os.name=="nt","Windows key ACL validation is fail closed")
     def test_safety_gate_rejects_before_acknowledging_execution_and_disconnect_is_offline(self):
-        self.transport.safety_ready=lambda:False; self.connect()
+        self.transport.safety_controller=LocalSafetyController(); self.connect()
         msg=types.SimpleNamespace(topic=self.transport.topics["commands"],payload=json.dumps(self.envelope()).encode(),retain=False)
         self.transport._on_message(self.transport.client,None,msg)
         ack=[p[1] for p in self.transport.client.published if p[1].get("kind")=="ack"][-1]
         self.assertEqual((ack["status"],ack["code"]),("rejected","hardware_not_commissioned"))
         self.assertEqual(self.called,[])
+        client = self.transport.client
         self.transport.disconnect()
         self.assertFalse(self.transport.status()["connected"])
         self.assertFalse(self.transport.status()["offlineQueue"])
+        shadows = [entry[1]["state"]["reported"]["connection"] for entry in client.published
+                   if entry[0] == f"$aws/things/{THING}/shadow/update"]
+        self.assertEqual(shadows[-1], "offline")
 
 if __name__=="__main__": unittest.main()

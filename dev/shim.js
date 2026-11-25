@@ -190,9 +190,15 @@
     // This browser-only fixture is deliberately empty and can never report a
     // connected robot or successful calibration.
     edgeDiagnostics: async () => ({ state: 'ACTION REQUIRED', runtimeKind: 'MOCK_RUNTIME', status: {
+      safety: { state: 'UNVERIFIED_RUNTIME', emergencyStopLatched: false, hardwareEnabled: false,
+        activeSources: [], calibrationReady: false, watchdog: 'MOCK PREVIEW', lastEvent: 'Browser fixture · no Edge Runtime' },
       leader: { connected: false, calibrated: false, calibration: 'ACTION REQUIRED', motionEnabled: false },
       physical: { connected: false, calibrated: false, calibration: 'ACTION REQUIRED', motionEnabled: false }
     } }),
+    safetyStatus: async () => ({ state: 'UNVERIFIED_RUNTIME', emergencyStopLatched: false, hardwareEnabled: false,
+      activeSources: [], calibrationReady: false, watchdog: 'MOCK PREVIEW', lastEvent: 'Browser fixture · no Edge Runtime' }),
+    safetyEmergencyStop: async () => { throw new Error('Browser preview has no runtime safety authority.'); },
+    safetyReset: async () => { throw new Error('Browser preview has no runtime safety authority.'); },
     edgePorts: async () => ({ items: [] }),
     edgeConnect: async () => { throw new Error('Browser preview cannot open serial hardware.'); },
     edgeDisconnect: async () => { throw new Error('Browser preview cannot open serial hardware.'); },
@@ -203,6 +209,7 @@
     edgeCalibrationCompleteStep: async () => { throw new Error('Browser preview cannot complete hardware calibration.'); },
     edgeCalibrationStop: async () => ({ active: false, status: 'idle', calibrated: false, motionEnabled: false }),
     teleopStatus: async () => Object.fromEntries([...teleopPairs].map(([id, pair]) => [id, teleopStatusRow(pair)])),
+    moveCartesianSimulation: async () => { throw new Error('Browser preview cannot run MuJoCo or access the Edge Runtime.'); },
     teleopConfigurePair: async (pairId, confirmed) => teleopConfigurePair(pairId, confirmed),
     teleopEnable: async (pairId, confirmed) => teleopEnable(pairId, confirmed),
     teleopDeadman: async (pairId, held, confirmed) => teleopDeadman(pairId, held, confirmed),

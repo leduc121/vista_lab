@@ -2,6 +2,7 @@ import io
 import json
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
@@ -23,6 +24,62 @@ class FakeAdapter:
 
 
 class PolicyManagerTests(unittest.TestCase):
+    def test_mock_model_proposal_is_labeled_timed_and_scoped_for_simulation(self):
+        joints = list(SO101_JOINTS)
+        proposal = {"jointPositions": [0.0] * 6, "jointNames": joints, "unit": "rad"}
+        with tempfile.TemporaryDirectory() as root:
+            manager = PolicyManager(root)
+            adapter = FakeAdapter()
+            adapter.act = lambda observation, prompt=None: proposal
+            manager.loader = lambda record, device: adapter
+            manager._items["mock"] = {"policyId": "mock", "architecture": "mock", "providerKind": "MOCK_MODEL",
+                                       "repositoryId": "tests/mock", "commit": "fixture-1", "supportsPrompt": True,
+                                       "status": "NOT_LOADED", "path": root}
+            manager.load("mock")
+            applied = []
+            result = manager.run({"state": [0] * 6}, "move the cube", execute=applied.append,
+                                 experiment={"experimentId": "exp-fixture"})
+            self.assertEqual(result["providerKind"], "MOCK_MODEL")
+            self.assertGreaterEqual(result["inferenceLatencyMs"], 0)
+            self.assertEqual(result["model"]["commit"], "fixture-1")
+            self.assertEqual(result["experiment"]["experimentId"], "exp-fixture")
+            self.assertEqual(applied, [proposal])
+
+    def test_invalid_mock_proposal_and_inference_timeout_never_execute(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = PolicyManager(root)
+            adapter = FakeAdapter()
+            manager.loader = lambda record, device: adapter
+            manager._items["mock"] = {"policyId": "mock", "architecture": "mock", "providerKind": "MOCK_MODEL",
+                                       "supportsPrompt": False, "status": "NOT_LOADED", "path": root}
+            manager.load("mock")
+            executed = []
+            adapter.act = lambda observation, prompt=None: {"not": "a joint command"}
+            with self.assertRaisesRegex(ValueError, "six-joint SO-101"):
+                manager.run({}, execute=executed.append)
+            adapter.act = lambda observation, prompt=None: (time.sleep(0.12) or {
+                "jointPositions": [0.0] * 6, "jointNames": list(SO101_JOINTS), "unit": "rad"})
+            with self.assertRaisesRegex(TimeoutError, "proposal discarded"):
+                manager.run({}, execute=executed.append, timeout_ms=100)
+            self.assertEqual(executed, [])
+
+    def test_missing_local_inference_provider_fails_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = PolicyManager(root, loader=lambda record, device: (_ for _ in ()).throw(
+                RuntimeError("Install isolated LeRobot 0.6.x inference dependencies.")))
+            manager._items["unavailable"] = {"policyId": "unavailable", "architecture": "smolvla",
+                "supportsPrompt": True, "status": "NOT_LOADED", "path": root}
+            with self.assertRaisesRegex(RuntimeError, "inference dependencies"):
+                manager.load("unavailable")
+            self.assertIsNone(manager._adapter)
+            self.assertEqual(manager._items["unavailable"]["status"], "ERROR")
+
+    def test_experiment_context_rejects_unknown_fields(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = PolicyManager(root)
+            with self.assertRaisesRegex(ValueError, "unsupported fields"):
+                manager.run({}, experiment={"robotId": "must-not-be-sent"})
+
     def test_inference_only_act_ignores_prompt_without_mapping_robot_actions(self):
         feature = lambda shape, kind: SimpleNamespace(shape=shape, type=kind)
         config = SimpleNamespace(type="act", input_features={
@@ -111,6 +168,26 @@ class PolicyManagerTests(unittest.TestCase):
             self.assertEqual(record["commit"], "abc123")
             self.assertTrue(record["supportsPrompt"])
             self.assertEqual(len(manager.list()), 1)
+
+    def test_import_preflights_disk_before_model_download(self):
+        config = b'{"type":"smolvla","input_features":{},"output_features":{}}'
+        artifacts = {"config.json": config, "train_config.json": b'{}',
+                     "policy_preprocessor.json": b'{"steps":[]}', "policy_postprocessor.json": b'{"steps":[]}',
+                     "model.safetensors": b"large-weight-placeholder"}
+        calls = []
+        def requester(req, timeout=20):
+            calls.append(req.full_url)
+            if "/api/models/" in req.full_url:
+                return Response(json.dumps({"sha": "fixture", "siblings": [
+                    {"rfilename": name, "size": len(data)} for name, data in artifacts.items()]}).encode())
+            return Response(artifacts[req.full_url.split("/resolve/")[1].split("/")[1].split("?")[0]])
+        with tempfile.TemporaryDirectory() as root:
+            manager = PolicyManager(root, requester=requester)
+            with patch("edge.policy_manager.shutil.disk_usage", return_value=SimpleNamespace(free=1)):
+                with self.assertRaisesRegex(OSError, "Insufficient disk space"):
+                    manager.import_model("team/model")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(manager.list()), 0)
 
     def test_nonprompt_drops_prompt_and_runs_act(self):
         with tempfile.TemporaryDirectory() as root:

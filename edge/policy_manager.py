@@ -7,16 +7,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 MAX_FILES = 128
 MAX_FILE_BYTES = 2 * 1024**3
@@ -24,6 +26,16 @@ MAX_TOTAL_BYTES = 8 * 1024**3
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 # These are the only model families with an adapter in this iteration.
 SUPPORTED = {"act", "smolvla"}
+DEFAULT_INFERENCE_TIMEOUT_MS = 25_000
+
+
+class ModelProvider(Protocol):
+    """Provider contract: return a validated SO-101 action proposal, never motor I/O."""
+
+    def validate_metadata(self, record: dict[str, Any]) -> bool: ...
+    def act(self, observation: dict[str, Any], prompt: str | None = None) -> dict[str, Any]: ...
+    def reset(self) -> None: ...
+    def unload(self) -> None: ...
 
 
 class LeRobotPolicyAdapter:
@@ -275,7 +287,7 @@ class PolicyManager:
         self._generation = 0
         self._switching = False
         self._active = None
-        self._adapter = None
+        self._adapter: ModelProvider | None = None
         self._items: dict[str, dict[str, Any]] = {}
         self._restore()
 
@@ -318,6 +330,29 @@ class PolicyManager:
 
     def import_model(self, repo: str, revision: str = "main", progress=None):
         meta = self.inspect(repo, revision)
+        if len(meta["siblings"]) > MAX_FILES: raise ValueError("Repository contains too many files for managed import.")
+        required = {meta["configFile"], "train_config.json", "policy_preprocessor.json", "policy_postprocessor.json"}
+        required.update(name for name in ("README.md", "LICENSE", "LICENSE.md") if name in meta["files"])
+        required.update(n for n in meta["files"] if n.startswith(("policy_preprocessor_step_", "policy_postprocessor_step_")) and n.endswith(".safetensors"))
+        required.update(n for n in meta["files"] if re.fullmatch(r"model(?:-\d+-of-\d+)?\.safetensors", n))
+        missing = required - set(meta["files"])
+        if missing: raise ValueError(f"Incomplete LeRobot inference bundle; missing: {', '.join(sorted(missing))}.")
+        selected = [item for item in meta["siblings"] if item.get("rfilename") in required]
+        sizes = []
+        for item in selected:
+            raw_size = item.get("size")
+            if not isinstance(raw_size, int): raw_size = (item.get("lfs") or {}).get("size")
+            if not isinstance(raw_size, int) or raw_size < 0:
+                raise ValueError("Model repository omits artifact sizes; inspect a version with complete size metadata before downloading.")
+            if raw_size > MAX_FILE_BYTES: raise ValueError(f"Artifact exceeds the {MAX_FILE_BYTES // 1024**3} GiB per-file limit.")
+            sizes.append(raw_size)
+        estimated_bytes = sum(sizes)
+        if estimated_bytes > MAX_TOTAL_BYTES: raise ValueError("Model bundle exceeds the managed size limit.")
+        probe = self.model_dir
+        while not probe.exists() and probe != probe.parent: probe = probe.parent
+        available_bytes = shutil.disk_usage(probe).free
+        if available_bytes < estimated_bytes + 64 * 1024**2:
+            raise OSError(f"Insufficient disk space: model needs about {estimated_bytes // (1024**2)} MiB plus 64 MiB safety margin.")
         self.model_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         try: self.model_dir.chmod(0o700)
         except OSError: pass
@@ -328,21 +363,15 @@ class PolicyManager:
         temp.mkdir(mode=0o700)
         try:
             siblings = meta["siblings"]
-            if len(siblings) > MAX_FILES: raise ValueError("Repository contains too many files for managed import.")
             total = 0; manifest = []
-            required = {meta["configFile"], "train_config.json", "policy_preprocessor.json", "policy_postprocessor.json"}
-            required.update(name for name in ("README.md", "LICENSE", "LICENSE.md") if name in meta["files"])
-            required.update(n for n in meta["files"] if n.startswith(("policy_preprocessor_step_", "policy_postprocessor_step_")) and n.endswith(".safetensors"))
-            required.update(n for n in meta["files"] if re.fullmatch(r"model(?:-\d+-of-\d+)?\.safetensors", n))
-            missing = required - set(meta["files"])
-            if missing: raise ValueError(f"Incomplete LeRobot inference bundle; missing: {', '.join(sorted(missing))}.")
             selected = [item for item in siblings if item.get("rfilename") in required]
             if not any(x.get("rfilename") == meta["configFile"] for x in selected): raise ValueError("Policy config is missing.")
             for item in selected:
                 name = item["rfilename"]
                 relative = Path(name)
                 if relative.is_absolute() or ".." in relative.parts or len(name) > 240: raise ValueError("Repository contains an unsafe artifact path.")
-                size = item.get("size") or (item.get("lfs") or {}).get("size")
+                size = item.get("size")
+                if not isinstance(size, int): size = (item.get("lfs") or {}).get("size")
                 if isinstance(size, int) and (size < 0 or size > MAX_FILE_BYTES): raise ValueError(f"Artifact exceeds the {MAX_FILE_BYTES // 1024**3} GiB per-file limit.")
                 url = f"https://huggingface.co/{meta['repositoryId']}/resolve/{urllib.parse.quote(meta['commit'], safe='')}/{urllib.parse.quote(name, safe='/')}?download=true"
                 req = urllib.request.Request(url, headers=self._headers())
@@ -378,7 +407,7 @@ class PolicyManager:
                 match = re.search(r"(?im)^\s*[-*]?\s*\*{0,2}robot type\*{0,2}:?\s*[`* ]*(so[-_ ]?101(?:_follower)?|so[-_ ]?follower)[`* ]*", readme)
                 if match: robot_type = "so101_follower"
             record = {"policyId": pid, "repositoryId": meta["repositoryId"], "revision": meta["revision"], "commit": meta["commit"],
-                      "architecture": arch.lower(), "path": str(target), "status": "NOT_LOADED", "supportsPrompt": prompt,
+                      "architecture": arch.lower(), "providerKind": "LEROBOT_MODEL", "path": str(target), "status": "NOT_LOADED", "supportsPrompt": prompt,
                       "robotType": robot_type,
                       "actionUnit": train_config.get("vista_action_unit") or
                                    ("degrees_mixed" if train_config.get("use_degrees") is True or
@@ -439,7 +468,15 @@ class PolicyManager:
                     self._adapter = old
             raise
 
-    def run(self, observation, prompt="", execute=None):
+    def run(self, observation, prompt="", execute=None, *, timeout_ms=DEFAULT_INFERENCE_TIMEOUT_MS, experiment=None):
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or not 100 <= timeout_ms <= 120_000:
+            raise ValueError("Inference timeout must be 100–120000 milliseconds.")
+        if experiment is not None:
+            if not isinstance(experiment, dict) or set(experiment) - {"experimentId", "attemptId", "episodeId"}:
+                raise ValueError("Experiment metadata contains unsupported fields.")
+            for key, value in experiment.items():
+                if not isinstance(value, str) or not 1 <= len(value) <= 128 or any(ord(c) < 32 for c in value):
+                    raise ValueError(f"Experiment metadata {key} must be a bounded printable string.")
         with self._inference_lock:
             with self._lock:
                 if self._switching: raise RuntimeError("Policy switching is in progress.")
@@ -448,11 +485,33 @@ class PolicyManager:
                 generation = self._generation; adapter = self._adapter; policy_id = self._active
                 record = self._items[policy_id]; record["status"] = "RUNNING"
             try:
+                started = time.monotonic()
                 action = adapter.act(observation, prompt=prompt if record["supportsPrompt"] else None)
+                latency_ms = max(0, round((time.monotonic() - started) * 1000))
+                if latency_ms > timeout_ms:
+                    raise TimeoutError(f"Model inference exceeded its {timeout_ms} ms budget; proposal discarded.")
                 with self._lock:
                     if generation != self._generation: raise RuntimeError("Stale inference result discarded after policy switch.")
+                if execute is not None:
+                    if (not isinstance(action, dict) or action.get("unit") != "rad" or
+                        action.get("jointNames") != list(SO101_JOINTS) or
+                        not isinstance(action.get("jointPositions"), list) or len(action["jointPositions"]) != len(SO101_JOINTS) or
+                        any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                            for value in action["jointPositions"])):
+                        raise ValueError("Model proposal failed the six-joint SO-101 safety contract.")
                 result = {"policyId": policy_id, "action": action,
-                          "promptUsed": bool(prompt and record["supportsPrompt"]), "motionEnabled": False}
+                          "promptUsed": bool(prompt and record["supportsPrompt"]), "motionEnabled": False,
+                          "inferenceLatencyMs": latency_ms,
+                          "observationSummary": {
+                              "jointNames": list(SO101_JOINTS),
+                              "jointPositionsRad": [float(value) for value in observation.get("observation.state", [])]
+                              if isinstance(observation.get("observation.state"), (list, tuple)) else [],
+                              "imageViews": sorted(key for key in observation if key.startswith("observation.images.")),
+                          },
+                          "providerKind": record.get("providerKind", "UNVERIFIED_MODEL"),
+                          "model": {"architecture": record.get("architecture", "unknown"),
+                                    "repositoryId": record.get("repositoryId"), "commit": record.get("commit")},
+                          "experiment": experiment or {}}
                 if execute is not None: result["simulation"] = execute(action)
                 return result
             finally:
@@ -477,3 +536,9 @@ class PolicyManager:
         if adapter:
             with self._inference_lock: adapter.reset()
         return {"activePolicyId": self._active, "stopped": True, "motionEnabled": False}
+
+    def invalidate_pending(self):
+        """Invalidate an in-flight proposal without waiting for provider inference to return."""
+        with self._lock:
+            self._generation += 1
+            return {"activePolicyId": self._active, "cancelRequested": True, "motionEnabled": False}

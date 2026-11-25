@@ -34,11 +34,13 @@ class CalibrationWorkflow:
     def __init__(self, *, device_factory: Callable[[str, str, str], Any] | None = None,
                  port_provider: Callable[[], list[dict[str, Any]]] | None = None,
                  motor_calibration_factory: Callable[..., Any] | None = None,
-                 position_mode: Any = None):
+                 position_mode: Any = None,
+                 write_authorizer: Callable[[str], Any] | None = None):
         self.device_factory = device_factory or self._lerobot_device
         self.port_provider = port_provider or self._ports
         self.motor_calibration_factory = motor_calibration_factory
         self.position_mode = position_mode
+        self.write_authorizer = write_authorizer
         self._lock = threading.RLock()
         self._complete_step = threading.Event()
         self._stop = threading.Event()
@@ -166,15 +168,15 @@ class CalibrationWorkflow:
             # Mirrors the LeRobot SO-101 sequence exposed by LeLab: establish
             # half-turn homing offsets at the operator's neutral pose, then
             # record the raw encoder range while the operator sweeps the joints.
-            device.bus.disable_torque()
+            self._write("disable_torque", device.bus.disable_torque)
             if self.position_mode is None:
                 from lerobot.motors.feetech import OperatingMode
                 position_mode = OperatingMode.POSITION.value
             else:
                 position_mode = self.position_mode
             for motor in device.bus.motors:
-                device.bus.write("Operating_Mode", motor, position_mode)
-            device.bus.reset_calibration()
+                self._write(f"Operating_Mode:{motor}", lambda motor=motor: device.bus.write("Operating_Mode", motor, position_mode))
+            self._write("reset_calibration", device.bus.reset_calibration)
             start = None
             for _attempt in range(5):
                 try:
@@ -194,7 +196,7 @@ class CalibrationWorkflow:
             if set(offsets) != _SO101_MOTORS:
                 raise RuntimeError("LeRobot homing offsets do not cover all six named SO-101 motors.")
             for motor, offset in offsets.items():
-                device.bus.write("Homing_Offset", motor, offset)
+                self._write(f"Homing_Offset:{motor}", lambda motor=motor, offset=offset: device.bus.write("Homing_Offset", motor, offset))
             mins, maxes = dict(start), dict(start)
             self._set(status="recording", step=1,
                       message="Move every joint by hand from its minimum to maximum range. Keep hands clear of pinch points.",
@@ -252,7 +254,7 @@ class CalibrationWorkflow:
                            homing_offset=offsets[motor], range_min=mins[motor], range_max=maxes[motor])
                            for motor, spec in device.bus.motors.items()}
             device.calibration = calibration
-            device.bus.write_calibration(calibration)
+            self._write("write_calibration", lambda: device.bus.write_calibration(calibration))
             device._save_calibration()
             result_status, message = "completed", "LeRobot confirmed and saved the calibration profile."
         except Exception as exc:
@@ -271,3 +273,8 @@ class CalibrationWorkflow:
                 owner.release()
             self._set(active=False, status=result_status, message=message, error=error,
                       calibrated=(result_status == "completed"), motionEnabled=False)
+
+    def _write(self, operation: str, action: Callable[[], Any]) -> Any:
+        if self.write_authorizer is not None:
+            self.write_authorizer(operation)
+        return action()

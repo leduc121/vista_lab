@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from edge.runtime import EdgeRuntime, LeRobotSO101Adapter, RUNTIME_VERSION, normalize_joint_positions, serve, JOINTS
+from edge.safety_controller import LocalSafetyController
 
 
 class FakePhysical:
@@ -58,6 +59,113 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(status["physical"]["mode"], "PHYSICAL ROBOT READ ONLY")
         self.assertFalse(status["motionEnabled"])
         self.assertEqual(set(status["arms"]), {"leader-a", "follower-a", "leader-b", "follower-b"})
+
+    def test_physical_adapter_exposes_only_gated_send_action(self):
+        adapter = LeRobotSO101Adapter("follower", "follower-a")
+        self.assertTrue(callable(adapter.send_action))
+        self.assertFalse(any(callable(getattr(adapter, name, None)) for name in ("apply", "write", "set_action")))
+        self.assertFalse(self.runtime.safety.mqtt_ready())
+
+    def test_mock_lerobot_send_action_runs_inside_safety_sink(self):
+        from types import SimpleNamespace
+        from edge.safety_controller import JOINTS
+        from edge.teleoperation import LIMITS, MAX_VELOCITY
+        class MockFollower:
+            is_connected = True
+            def __init__(self): self.actions = []
+            def send_action(self, action): self.actions.append(dict(action)); return action
+        robot = MockFollower()
+        adapter = LeRobotSO101Adapter("follower", "follower-a", position_limits_rad=LIMITS,
+                                      velocity_limits_rad=MAX_VELOCITY,
+                                      safe_stop=lambda _robot: "mock-safe-stop")
+        adapter.robot, adapter.calibration_ready, adapter.device_id = robot, True, "mock-arm"
+        safety = LocalSafetyController(fake_robot=False, hardware_enabled=True)
+        safety._physical_calibration_ready = True
+        safety.acquire("follower-a", "manual-control", runtime_kind="PHYSICAL_ROBOT", robot_id="mock-arm",
+                       hardware_authorized=True, calibrated=True)
+        def authorize(*, positions_rad, sequence, occurred_at, hardware_authorized, sink):
+            return safety.validate_joint_action(resource="follower-a", source="manual-control", robot_id="mock-arm",
+                joint_names=JOINTS, positions=positions_rad, unit="rad", position_limits=LIMITS,
+                sequence=sequence, occurred_at=occurred_at, runtime_kind="PHYSICAL_ROBOT",
+                calibrated=True, hardware_authorized=hardware_authorized,
+                velocity_limits=MAX_VELOCITY, sink=sink)
+        response = adapter.send_action([0.1, 0.2, -0.1, 0.0, 0.1, 0.0], authorize=authorize,
+                                       sequence=1, occurred_at=__import__("time").time(), hardware_authorized=True)
+        self.assertTrue(response["accepted"])
+        self.assertEqual(len(robot.actions), 1)
+        self.assertAlmostEqual(robot.actions[0]["shoulder_pan.pos"], 5.72957795)
+        self.assertGreaterEqual(robot.actions[0]["gripper.pos"], 0)
+        self.assertLessEqual(robot.actions[0]["gripper.pos"], 100)
+
+    def test_mock_send_action_rejects_without_safety_gate_or_stop_strategy(self):
+        from edge.teleoperation import LIMITS
+        robot = type("MockFollower", (), {"is_connected": True, "send_action": lambda *_: self.fail("write bypassed safety")})()
+        adapter = LeRobotSO101Adapter("follower", "follower-a", position_limits_rad=LIMITS)
+        adapter.robot, adapter.calibration_ready = robot, True
+        with self.assertRaisesRegex(PermissionError, "Verified position/velocity limits"):
+            adapter.send_action([0.0] * 6, authorize=None, sequence=1,
+                                occurred_at=__import__("time").time(), hardware_authorized=True)
+
+    def test_dual_physical_teleop_wiring_uses_pair_specific_leader_and_follower_safety_lease(self):
+        from edge.teleoperation import LIMITS, MAX_VELOCITY
+        from edge.safety_controller import LocalSafetyController
+        class MockRobot:
+            is_connected = True
+            def __init__(self, leader=False): self.actions = []; self.leader = leader
+            def get_action(self): return {f"{name}.pos": 0.0 for name in JOINTS}
+            def send_action(self, action): self.actions.append(dict(action)); return action
+        adapters = {}
+        robots = {}
+        for pair, leader_slot, follower_slot in (("a", "leader-a", "follower-a"), ("b", "leader-b", "follower-b")):
+            leader, follower = LeRobotSO101Adapter("leader", leader_slot), LeRobotSO101Adapter("follower", follower_slot,
+                position_limits_rad=LIMITS, velocity_limits_rad=MAX_VELOCITY, safe_stop=lambda _robot: True)
+            leader.robot, follower.robot = MockRobot(True), MockRobot()
+            leader.device_id, follower.device_id = f"mock-leader-{pair}", f"mock-follower-{pair}"
+            leader.port, follower.port = f"leader-{pair}", f"follower-{pair}"
+            leader.calibration_ready = follower.calibration_ready = True
+            adapters[leader_slot], adapters[follower_slot] = leader, follower
+            robots[follower_slot] = follower.robot
+        runtime = EdgeRuntime(arms=adapters, hardware_authorizer=lambda _slot: True)
+        runtime.safety = LocalSafetyController(fake_robot=False, hardware_enabled=True)
+        runtime.safety._physical_calibration_ready = True
+        for pair, follower_slot in (("pair-a", "follower-a"), ("pair-b", "follower-b")):
+            runtime.handle({"id": pair, "method": "physical_teleop_start", "params": {"pairId": pair, "confirmed": True}})
+            response = runtime.handle({"id": pair + "-step", "method": "physical_teleop_step", "params": {
+                "pairId": pair, "sequence": 1, "occurredAt": __import__("time").time(), "deadman": True}})
+            self.assertEqual(response["state"], "EXECUTING")
+            self.assertEqual(len(robots[follower_slot].actions), 1)
+            runtime.handle({"id": pair + "-stop", "method": "physical_teleop_stop", "params": {"pairId": pair}})
+        self.assertEqual(set(runtime.safety.status()["owners"]), set())
+
+    def test_physical_teleop_fails_closed_with_default_hardware_policy(self):
+        class MockRobot:
+            is_connected = True
+        for slot, role in (("leader-a", "leader"), ("follower-a", "follower")):
+            adapter = LeRobotSO101Adapter(role, slot)
+            adapter.robot, adapter.calibration_ready, adapter.device_id = MockRobot(), True, slot
+            if role == "follower":
+                from edge.teleoperation import LIMITS, MAX_VELOCITY
+                adapter.position_limits_rad, adapter.velocity_limits_rad = LIMITS, MAX_VELOCITY
+                adapter.safe_stop_handler = lambda _robot: True
+            self.runtime.arms[slot] = adapter
+        self.runtime._hardware_authorizer = lambda _slot: True
+        with self.assertRaisesRegex(PermissionError, "hardware_disabled|hardware_not_authorized"):
+            self.runtime.handle({"id": "physical-arm", "method": "physical_teleop_start", "params": {
+                "pairId": "pair-a", "confirmed": True}})
+
+    def test_serial_read_disconnect_latches_shared_emergency_stop(self):
+        self.runtime.handle({"id": "connect", "method": "connect", "params": {
+            "mode": "PHYSICAL ROBOT READ ONLY", "confirmed": True, "role": "follower",
+            "slot": "follower-a", "port": "/dev/test-serial", "deviceId": "follower-a"}})
+        def fail_read():
+            self.physical.connected = False
+            raise ConnectionError("USB removed")
+        self.physical.joint_state = fail_read
+        with self.assertRaisesRegex(ConnectionError, "USB removed"):
+            self.runtime.handle({"id": "read", "method": "joint_state", "params": {"role": "follower", "slot": "follower-a"}})
+        safety = self.runtime.handle({"id": "safety", "method": "safety_status"})
+        self.assertTrue(safety["emergencyStopLatched"])
+        self.assertEqual(safety["state"], "ESTOPPED")
 
     def test_four_arm_slots_are_independent_and_serial_ports_are_exclusive(self):
         ports = ["/dev/fake-a", "/dev/fake-b", "/dev/fake-c", "/dev/fake-d"]
@@ -158,20 +266,55 @@ class RuntimeTests(unittest.TestCase):
         policy = FixturePolicy()
         self.runtime.policies.loader = lambda _record, _device: policy
         self.runtime.policies._items["fixture"] = {
-            "policyId": "fixture", "architecture": "act", "supportsPrompt": False,
+            "policyId": "fixture", "architecture": "act", "providerKind": "MOCK_MODEL", "supportsPrompt": False,
             "status": "NOT_LOADED", "path": ".",
         }
         self.runtime.policies.load("fixture")
         frames = []
         result = self.runtime.handle({"id": "policy-run", "method": "policy_run",
-                                      "params": {"prompt": "ignore this task"}}, on_event=frames.append)
+                                      "params": {"prompt": "ignore this task", "experiment": {"experimentId": "123e4567-e89b-42d3-a456-426614174000"}}}, on_event=frames.append)
         self.assertIsNone(policy.prompt)
         self.assertFalse(result["promptUsed"])
         self.assertEqual(result["simulation"]["engine"], "MuJoCo")
         self.assertFalse(result["motionEnabled"])
+        self.assertEqual(result["providerKind"], "MOCK_MODEL")
+        self.assertEqual(result["experiment"]["experimentId"], "123e4567-e89b-42d3-a456-426614174000")
+        self.assertGreaterEqual(result["inferenceLatencyMs"], 0)
         self.assertGreater(len(frames), 0)
         self.assertEqual(frames[-1]["controller_id"], "local-policy-mujoco")
         self.assertEqual(len(frames[-1]["measured"]), 6)
+        safety = self.runtime.handle({"id": "safety", "method": "safety_status"})
+        self.assertEqual(safety["state"], "READY")
+        self.assertIsNone(safety["activeControlSource"])
+        self.assertEqual(safety["lastEvent"], "VLA released on local-so101-simulation")
+
+    def test_runtime_fake_teleoperation_uses_shared_gate_and_global_latched_estop(self):
+        self.runtime.handle({"id": "configure", "method": "teleop_configure", "params": {
+            "pairId": "pair-a", "leaderPort": "fake://pair-a/leader", "followerPort": "fake://pair-a/follower", "confirmed": True}})
+        self.runtime.handle({"id": "configure-b", "method": "teleop_configure", "params": {
+            "pairId": "pair-b", "leaderPort": "fake://pair-b/leader", "followerPort": "fake://pair-b/follower", "confirmed": True}})
+        self.runtime.handle({"id": "enable", "method": "teleop_enable", "params": {"pairId": "pair-a", "confirmed": True}})
+        self.runtime.handle({"id": "enable-b", "method": "teleop_enable", "params": {"pairId": "pair-b", "confirmed": True}})
+        self.runtime.handle({"id": "deadman", "method": "teleop_deadman", "params": {"pairId": "pair-a", "held": True, "confirmed": True}})
+        safety = self.runtime.handle({"id": "status", "method": "safety_status"})
+        self.assertEqual(safety["state"], "EXECUTING")
+        self.assertEqual(safety["activeControlSource"], "teleoperation")
+        self.assertEqual(set(safety["owners"]), {"follower-a", "follower-b"})
+        with self.assertRaisesRegex(PermissionError, "execution_owned_by_another_source"):
+            self.runtime.safety.acquire("follower-a", "MQTT", runtime_kind="SIMULATION", robot_id="local-follower-a")
+        stopped = self.runtime.handle({"id": "estop", "method": "safety_estop"})
+        self.assertEqual(stopped["state"], "ESTOPPED")
+        self.assertTrue(stopped["emergencyStopLatched"])
+        with self.assertRaisesRegex(PermissionError, "emergency stop"):
+            self.runtime.handle({"id": "arm-blocked", "method": "teleop_enable", "params": {"pairId": "pair-a", "confirmed": True}})
+        reset = self.runtime.handle({"id": "reset", "method": "safety_reset", "params": {"confirmed": True}})
+        self.assertFalse(reset["emergencyStopLatched"])
+        self.assertEqual(reset["state"], "READY")
+        self.assertIsNone(reset["activeControlSource"])
+        self.runtime.handle({"id": "rearm", "method": "teleop_enable", "params": {"pairId": "pair-a", "confirmed": True}})
+        self.assertEqual(self.runtime.handle({"id": "after-rearm", "method": "safety_status"})["state"], "ARMED")
+        self.runtime.close()
+        self.assertEqual(self.runtime.handle({"id": "closed-state", "method": "safety_status"})["state"], "ESTOPPED")
 
     def test_physical_connection_requires_mode_confirmation_and_explicit_port(self):
         with self.assertRaises(PermissionError):
@@ -199,7 +342,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.runtime.handle({"id": "cal", "method": "calibration_start", "params": {
                 "role": "leader", "port": "/dev/test-serial", "profileId": "leader-a", "confirmed": False}})
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(PermissionError, "hardware_disabled"):
             self.runtime.handle({"id": "cal2", "method": "calibration_start", "params": {
                 "role": "leader", "port": "/dev/guess", "profileId": "leader-a", "confirmed": True}})
 

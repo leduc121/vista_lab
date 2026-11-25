@@ -36,9 +36,13 @@ class MqttTransport:
     def __init__(self, *, host: str, thing_name: str, robot_id: str, ca_file: str,
                  cert_file: str, key_file: str, authorize: Callable[[dict], bool],
                  safety_ready: Callable[[], bool], on_command: Callable[[dict], Any],
+                 safety_controller: Any | None = None,
                  dedupe_path: str, client_factory: Callable[..., Any] | None = None,
                  port: int = 8883, topic_prefix: str = "vista/demo/robots",
-                 heartbeat_interval: float = 30.0) -> None:
+                 heartbeat_interval: float = 30.0,
+                 runtime_kind: str = "PHYSICAL_ROBOT",
+                 allow_local_test: bool = False,
+                 on_command_envelope: Callable[[dict], Any] | None = None) -> None:
         if not isinstance(host, str) or not host or len(host) > 253 or any(c in host for c in "/@ "):
             raise ValueError("A valid AWS IoT endpoint hostname is required.")
         if not THING_RE.fullmatch(thing_name) or not ROBOT_ID_RE.fullmatch(robot_id):
@@ -49,12 +53,19 @@ class MqttTransport:
             raise ValueError("MQTT topic prefix is invalid.")
         if port != 8883 or not 5 <= heartbeat_interval <= 300:
             raise ValueError("AWS IoT requires port 8883 and a heartbeat from 5 to 300 seconds.")
+        if runtime_kind not in {"PHYSICAL_ROBOT", "SIMULATION", "MOCK_RUNTIME"}:
+            raise ValueError("MQTT runtime kind is invalid.")
+        if runtime_kind != "PHYSICAL_ROBOT" and not allow_local_test:
+            raise PermissionError("Non-physical MQTT runtime is available only to injected local tests.")
         self.host, self.port, self.thing_name, self.robot_id = host, port, thing_name, robot_id
         self.prefix = f"{topic_prefix}/{robot_id}"
         self.ca_file, self.cert_file, self.key_file = map(str, (ca_file, cert_file, key_file))
         self.authorize, self.safety_ready, self.on_command = authorize, safety_ready, on_command
+        self.on_command_envelope = on_command_envelope
+        self.safety_controller = safety_controller
         self.dedupe_path, self.client_factory = str(dedupe_path), client_factory
         self.heartbeat_interval = heartbeat_interval
+        self.runtime_kind, self.allow_local_test = runtime_kind, allow_local_test
         self.client = None
         self.connected = threading.Event()
         self.heartbeat_timer: threading.Timer | None = None
@@ -64,6 +75,7 @@ class MqttTransport:
         self.lock = threading.RLock()
         self.dedupe_healthy = True
         self.seen: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+        self.seen_started: dict[str, int] = {}
         try:
             stored = json.loads(Path(self.dedupe_path).read_text(encoding="utf-8"))
             if not isinstance(stored, dict): raise ValueError("dedupe state is not an object")
@@ -73,6 +85,7 @@ class MqttTransport:
                         and isinstance(entry.get("expiresAtMs"), int) and entry["expiresAtMs"] > now
                         and isinstance(entry.get("events"), list)):
                     self.seen[key] = entry["events"]
+                    self.seen_started[key] = now
         except FileNotFoundError: pass
         except Exception as error:
             self.last_error = f"Persistent MQTT dedupe state is invalid: {error}"
@@ -89,7 +102,13 @@ class MqttTransport:
         if os.stat(self.key_file).st_mode & 0o077: raise PermissionError("Device private key must be restricted to its owner (0600).")
 
     def connect(self, timeout: float = 8.0) -> dict[str, Any]:
+        if self.runtime_kind != "PHYSICAL_ROBOT":
+            if not self.allow_local_test:
+                raise PermissionError("Simulation/test MQTT transports cannot connect to AWS IoT.")
+            return self.connect_local_test(timeout=timeout)
         if os.environ.get("VISTA_IOT_ENABLED") != "true": raise PermissionError("AWS IoT is disabled by operator policy (VISTA_IOT_ENABLED is not true).")
+        if self.safety_controller is None or not callable(getattr(self.safety_controller, "mqtt_ready", None)):
+            raise PermissionError("A unified LocalSafetyController is required before MQTT can connect.")
         self._check_files()
         if not self.dedupe_healthy: raise RuntimeError(self.last_error or "Persistent command dedupe is unavailable.")
         if self.client is not None: raise RuntimeError("MQTT transport is already initialized.")
@@ -111,6 +130,26 @@ class MqttTransport:
         if not self.connected.wait(max(.1, min(timeout, 30))):
             self.disconnect()
             raise TimeoutError("MQTT TLS connection timed out.")
+        return self.status()
+
+    def connect_local_test(self, timeout: float = 2.0) -> dict[str, Any]:
+        """Connect an injected local broker fake; this path cannot contact AWS."""
+        if not self.allow_local_test or self.runtime_kind == "PHYSICAL_ROBOT":
+            raise PermissionError("Local mock MQTT is restricted to explicitly injected simulation tests.")
+        if self.client is not None:
+            raise RuntimeError("MQTT transport is already initialized.")
+        if self.client_factory is None:
+            raise RuntimeError("An injected local MQTT client is required.")
+        client = self.client_factory()
+        client.will_set(f"$aws/things/{self.thing_name}/shadow/update",
+                        json.dumps({"state": {"reported": self._reported(connection="offline")}}, separators=(",", ":")), qos=1, retain=False)
+        client.on_connect, client.on_disconnect, client.on_message = self._on_connect, self._on_disconnect, self._on_message
+        self.client = client
+        client.connect("127.0.0.1", 1883, keepalive=30)
+        client.loop_start()
+        if not self.connected.wait(max(.1, min(timeout, 10))):
+            self.disconnect()
+            raise TimeoutError("Local mock MQTT connection timed out.")
         return self.status()
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
@@ -146,6 +185,7 @@ class MqttTransport:
 
     def _on_message(self, client, userdata, message):
         command_id, sequence = "", 0
+        resource = None
         try:
             if message.topic != self.topics["commands"]: raise ValueError("command_identity_invalid")
             if len(message.payload) > MAX_MESSAGE_BYTES: raise ValueError("command_payload_invalid")
@@ -177,45 +217,64 @@ class MqttTransport:
                 prior = self.seen.get(command_id)
                 if prior is not None:
                     if prior: self._publish_events(prior)
+                    else: self._reject(command_id, sequence, "command_replayed")
                     return
                 if any(e.get("robotId") == self.robot_id and e.get("sequence", 0) >= sequence for events in self.seen.values() for e in events): raise ValueError("command_replayed")
             if not self.authorize(envelope): raise ValueError("runtime_rejected")
-            if not self.safety_ready(): raise ValueError("hardware_not_commissioned")
+            if not self.safety_ready(): raise ValueError("runtime_not_ready")
+            if self.runtime_kind == "PHYSICAL_ROBOT" and not self.safety_controller.mqtt_ready(): raise ValueError("hardware_not_commissioned")
+            resource = f"mqtt:{self.robot_id}"
+            self.safety_controller.acquire(resource, "MQTT", runtime_kind=self.runtime_kind,
+                                           robot_id=self.robot_id, calibrated=True,
+                                           hardware_authorized=self.runtime_kind == "PHYSICAL_ROBOT", device_role="follower")
             with self.lock:
                 prior = self.seen.get(command_id)
                 if prior is not None:
                     if prior: self._publish_events(prior)
+                    self.safety_controller.release(resource, reason="duplicate_command")
+                    if not prior: self._reject(command_id, sequence, "command_replayed")
                     return
                 if any(e.get("robotId") == self.robot_id and e.get("sequence", 0) >= sequence for events in self.seen.values() for e in events): raise ValueError("command_replayed")
                 now = int(time.time() * 1000)
-                expired = [key for key, events in self.seen.items() if events and events[0].get("occurredAtMs", 0) + MAX_COMMAND_TTL_MS <= now]
-                for key in expired: self.seen.pop(key, None)
+                expired = [key for key, events in self.seen.items()
+                           if (events[0].get("occurredAtMs", 0) + MAX_COMMAND_TTL_MS <= now if events
+                               else self.seen_started.get(key, now) + MAX_COMMAND_TTL_MS <= now)]
+                for key in expired:
+                    self.seen.pop(key, None); self.seen_started.pop(key, None)
                 if len(self.seen) >= 5000: raise ValueError("command_replayed")
                 self.seen[command_id] = []
+                self.seen_started[command_id] = now
                 self._persist_seen()
             self.last_command = command_id
             occurred = int(time.time() * 1000)
             events = [self._event(command_id, "ack", "accepted", sequence, occurred),
                       self._event(command_id, "status", "executing", sequence + 1, occurred)]
             self.seen[command_id] = events
+            self.seen_started[command_id] = occurred
             self._persist_seen(); self._publish_events(events)
             try:
-                result = self.on_command(payload)
+                result = self.on_command_envelope(envelope) if self.on_command_envelope else self.on_command(payload)
                 if result is False: raise RuntimeError("runtime_rejected")
                 terminal, code = "completed", None
             except Exception as error:
                 terminal, code = "failed", str(error)[:80] or "runtime_rejected"
+            finally:
+                self.safety_controller.release(resource, reason="command_finished")
             finished = int(time.time() * 1000)
             events.append(self._event(command_id, "status", terminal, sequence + 2, finished, code))
             self.seen[command_id] = events
+            self.seen_started[command_id] = finished
             self._persist_seen(); self._publish_events([events[-1]])
         except Exception as error:
+            if resource is not None and self.safety_controller is not None:
+                try: self.safety_controller.release(resource, reason="command_rejected")
+                except Exception: pass
             self.last_error = str(error)[:300]
             if command_id and sequence:
                 with self.lock:
                     if command_id in self.seen and not self.seen[command_id]:
-                        self.seen.pop(command_id, None); self._persist_seen()
-                self._reject(command_id, sequence, str(error) if str(error) in {"command_invalid", "command_invalid_json", "command_identity_invalid", "command_payload_invalid", "command_expired", "command_replayed", "runtime_rejected", "hardware_not_commissioned"} else "command_invalid")
+                        self.seen.pop(command_id, None); self.seen_started.pop(command_id, None); self._persist_seen()
+                self._reject(command_id, sequence, str(error) if str(error) in {"command_invalid", "command_invalid_json", "command_identity_invalid", "command_payload_invalid", "command_expired", "command_replayed", "runtime_rejected", "runtime_not_ready", "hardware_not_commissioned", "hardware_disabled", "hardware_not_authorized", "calibration_required", "estop_latched", "execution_owned_by_another_source", "runtime_fault_latched"} else "command_invalid")
 
     def _persist_seen(self):
         path = Path(self.dedupe_path); path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -279,8 +338,15 @@ class MqttTransport:
         if timer: timer.cancel()
 
     def disconnect(self):
-        client, self.client = self.client, None
+        client = self.client
+        if client and self.connected.is_set():
+            try:
+                self.publish_status({"connection": "offline", "state": "offline", "hardwareEnabled": False})
+                self._publish_shadow("offline")
+            except Exception:
+                self.last_error = "Could not publish the graceful offline state."
         self.connected.clear(); self._cancel_heartbeat()
+        self.client = None
         if client:
             try: client.disconnect()
             finally: client.loop_stop()

@@ -94,6 +94,29 @@ class CalibrationWorkflowTests(unittest.TestCase):
         self.assertEqual(status["deviceState"], "DISCONNECTED")
         self.assertFalse(self.device.saved)
 
+    def test_every_calibration_bus_write_uses_authorization_callback(self):
+        authorized = []
+        def authorize(operation):
+            authorized.append(operation)
+            if operation.startswith("Homing_Offset:"):
+                raise PermissionError("maintenance authorization revoked")
+        workflow = CalibrationWorkflow(
+            device_factory=lambda *_: self.device,
+            port_provider=lambda: [{"path": "/dev/fake-so101"}],
+            motor_calibration_factory=lambda **values: values,
+            position_mode=1, write_authorizer=authorize,
+        )
+        workflow.start("follower", "/dev/fake-so101", "follower-a", True)
+        deadline = time.monotonic() + 2
+        while workflow.status()["active"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(workflow.status()["active"])
+        self.assertEqual(workflow.status()["status"], "error")
+        self.assertIn("reset_calibration", authorized)
+        self.assertTrue(any(item.startswith("Homing_Offset:") for item in authorized))
+        self.assertFalse(any(call[0] == "Homing_Offset" for call in self.device.bus.calls))
+        self.assertFalse(self.device.saved)
+
     def test_calibration_slot_must_match_role(self):
         with self.assertRaises(ValueError):
             self.workflow.start("leader", "/dev/fake-so101", "leader-profile", True, "follower-b")
