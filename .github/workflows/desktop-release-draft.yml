@@ -24,15 +24,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: windows-x64
-            os: windows-latest
-            target: --win nsis --x64
           - id: ubuntu-x64
             os: ubuntu-latest
-            target: --linux AppImage deb --x64
-          - id: macos-arm64
-            os: macos-15
-            target: --mac dmg --arm64
+            target: --linux deb --x64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Validate source SHA
@@ -134,25 +128,61 @@ jobs:
             [[ "$(cat "$dir/source-sha.txt")" == "$SOURCE_SHA" ]]
             platform="$(cat "$dir/platform-architecture.txt")"
             for file in "$dir"/*; do
-              case "$(basename "$file")" in
+              basename="$(basename "$file")"
+              case "$basename" in
                 source-sha.txt|platform-architecture.txt) continue ;;
               esac
-              if [[ "$(basename "$file")" == runtime-python-sbom.cdx.json ]]; then
+              case "$basename" in
+                'VISTA Lab Station-0.1.0-amd64.deb'|runtime-python-sbom.cdx.json|*-binary-sbom.cdx.json|*-THIRD_PARTY_LICENSES.zip) ;;
+                *.exe|*.AppImage|*.dmg) continue ;;
+              esac
+              if [[ "$basename" == runtime-python-sbom.cdx.json ]]; then
                 cp "$file" "release-assets/final/${platform}-runtime-python-sbom.cdx.json"
               else
                 cp "$file" release-assets/final/
               fi
             done
           done
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.exe' | wc -l) -eq 1 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.deb' | wc -l) -eq 1 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.AppImage' | wc -l) -eq 1 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*arm64*.dmg' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/platforms -mindepth 1 -maxdepth 1 -type d | wc -l) -eq 1 ]]
+          [[ "$(cat release-assets/platforms/ubuntu-x64/platform-architecture.txt)" == ubuntu-x64 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name 'VISTA Lab Station-0.1.0-amd64.deb' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f \( -iname '*.exe' -o -iname '*.appimage' -o -iname '*.dmg' \) | wc -l) -eq 0 ]]
           cp release-metadata/docs/desktop/DESKTOP_DISTRIBUTION_SBOM.cdx.json release-assets/final/SOURCE-INPUT-SBOM.cdx.json
           cp release-metadata/docs/desktop/THIRD_PARTY_NOTICES.md release-assets/final/THIRD_PARTY_NOTICES.md
           cp release-metadata/docs/desktop/RELEASE_NOTES_0.1.0.md release-assets/final/RELEASE_NOTES_0.1.0.md
           printf 'source_sha=%s\nworkflow_run_id=%s\nworkflow_run_url=%s\n' "$SOURCE_SHA" "$RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > release-assets/final/BUILD_PROVENANCE.txt
-          (cd release-assets/final && sha256sum -- *.exe *.deb *.AppImage *.dmg *.cdx.json *-THIRD_PARTY_LICENSES.zip THIRD_PARTY_NOTICES.md RELEASE_NOTES_0.1.0.md BUILD_PROVENANCE.txt > SHA256SUMS)
+          deb='VISTA Lab Station-0.1.0-amd64.deb'
+          deb_sha="$(sha256sum "release-assets/final/$deb" | cut -d' ' -f1)"
+          deb_size="$(stat -c '%s' "release-assets/final/$deb")"
+          deb_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v0.1.0/$deb"
+          cat > release-assets/final/INSTALL_UBUNTU.md <<EOF
+          # VISTA Lab Station 0.1.0 — Ubuntu amd64
+
+          This Draft contains the Ubuntu/Debian amd64 DEB only. Windows and macOS downloads are Coming Soon. The download URL below is not public until the owner publishes the Release.
+
+          - Version: 0.1.0
+          - Architecture: amd64
+          - File: $deb
+          - Size: $deb_size bytes
+          - SHA-256: $deb_sha
+          - Draft asset URL (not public yet): $deb_url
+          - Package dependencies: $(dpkg-deb --field "release-assets/final/$deb" Depends)
+
+          After this Release is published, download and install with:
+
+          \`\`\`sh
+          curl -fL "$deb_url" -o vista-lab-station.deb
+          sudo apt install ./vista-lab-station.deb
+          gtk-launch vista-lab-station
+          \`\`\`
+
+          You can also open **VISTA Lab Station** from Ubuntu's Application Menu. To uninstall:
+
+          \`\`\`sh
+          sudo apt purge vista-lab-station
+          \`\`\`
+          EOF
+          (cd release-assets/final && sha256sum -- *.deb *.cdx.json *-THIRD_PARTY_LICENSES.zip THIRD_PARTY_NOTICES.md RELEASE_NOTES_0.1.0.md BUILD_PROVENANCE.txt INSTALL_UBUNTU.md > SHA256SUMS)
           (cd release-assets/final && sha256sum -c SHA256SUMS)
 
       - name: Create Draft Release only
