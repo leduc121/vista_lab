@@ -1,0 +1,174 @@
+name: Desktop release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full source commit to build (must already be merged and reviewed)
+        required: true
+        default: 80aef01eca657fa8a2dbe3340bac27e048619b11
+        type: string
+      create_draft:
+        description: Attach verified same-run artifacts to a GitHub Draft Release v0.1.0
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-x64
+            os: windows-latest
+            target: --win nsis --x64
+          - id: ubuntu-x64
+            os: ubuntu-latest
+            target: --linux AppImage deb --x64
+          - id: macos-arm64
+            os: macos-15
+            target: --mac dmg --arm64
+          - id: macos-x64
+            os: macos-15-intel
+            target: --mac dmg --x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Validate source SHA
+        shell: bash
+        run: |
+          if [[ ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: python -m pip install -r requirements-edge.txt
+      - run: python -m pip inspect --local > release-python-inspect.json
+      - run: python -m unittest discover -s edge/tests -v
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:edge-runtime
+        shell: bash
+      - run: npm run build:renderer
+      - run: npx electron-builder ${{ matrix.target }} --publish never
+
+      - name: Stage platform artifact and runtime SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="release-stage/${PLATFORM_ID}"
+          mkdir -p "$stage"
+          python release-tools/scripts/stage-native-release.py dist/phase6-candidate "$stage" release-python-inspect.json "${PLATFORM_ID}"
+          printf '%s\n' "$SOURCE_SHA" > "$stage/source-sha.txt"
+          printf '%s\n' "$PLATFORM_ID" > "$stage/platform-architecture.txt"
+          find "$stage" -maxdepth 1 -type f -print
+        env:
+          PLATFORM_ID: ${{ matrix.id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vista-desktop-${{ matrix.id }}
+          path: release-stage/${{ matrix.id }}/*
+          if-no-files-found: error
+          retention-days: 30
+
+  draft-release:
+    if: ${{ inputs.create_draft }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-metadata
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vista-desktop-*
+          path: release-assets/platforms
+
+      - name: Assemble release files and verify provenance
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/final
+          shopt -s nullglob
+          for dir in release-assets/platforms/*; do
+            [[ -d "$dir" ]] || continue
+            [[ "$(cat "$dir/source-sha.txt")" == "$SOURCE_SHA" ]]
+            platform="$(cat "$dir/platform-architecture.txt")"
+            for file in "$dir"/*; do
+              case "$(basename "$file")" in
+                source-sha.txt|platform-architecture.txt) continue ;;
+              esac
+              if [[ "$(basename "$file")" == runtime-python-sbom.cdx.json ]]; then
+                cp "$file" "release-assets/final/${platform}-runtime-python-sbom.cdx.json"
+              else
+                cp "$file" release-assets/final/
+              fi
+            done
+          done
+          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.exe' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.deb' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.AppImage' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name '*arm64*.dmg' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name '*x64*.dmg' | wc -l) -eq 1 ]]
+          cp release-metadata/docs/desktop/DESKTOP_DISTRIBUTION_SBOM.cdx.json release-assets/final/SOURCE-INPUT-SBOM.cdx.json
+          cp release-metadata/docs/desktop/THIRD_PARTY_NOTICES.md release-assets/final/THIRD_PARTY_NOTICES.md
+          cp release-metadata/docs/desktop/RELEASE_NOTES_0.1.0.md release-assets/final/RELEASE_NOTES_0.1.0.md
+          printf 'source_sha=%s\nworkflow_run_id=%s\nworkflow_run_url=%s\n' "$SOURCE_SHA" "$RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > release-assets/final/BUILD_PROVENANCE.txt
+          (cd release-assets/final && sha256sum -- *.exe *.deb *.AppImage *.dmg *.cdx.json THIRD_PARTY_NOTICES.md RELEASE_NOTES_0.1.0.md BUILD_PROVENANCE.txt > SHA256SUMS)
+          (cd release-assets/final && sha256sum -c SHA256SUMS)
+
+      - name: Create Draft Release only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v0.1.0 --json isDraft >/dev/null 2>&1; then
+            echo 'A v0.1.0 release already exists; refusing to modify or replace it.' >&2
+            exit 1
+          fi
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v0.1.0" --jq '.object.sha' 2>/dev/null || true)"
+          if [[ -n "$tag_ref" ]]; then
+            object_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v0.1.0" --jq '.object.type')"
+            if [[ "$object_type" == tag ]]; then
+              tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_ref" --jq '.object.sha')"
+            fi
+            if [[ "$tag_ref" != "$SOURCE_SHA" ]]; then
+              echo "Existing v0.1.0 tag points to $tag_ref, not $SOURCE_SHA; refusing to move it." >&2
+              exit 1
+            fi
+          fi
+          gh release create v0.1.0 release-assets/final/* \
+            --draft --target "$SOURCE_SHA" --title 'VISTA Lab Station 0.1.0' \
+            --notes-file release-assets/final/RELEASE_NOTES_0.1.0.md
