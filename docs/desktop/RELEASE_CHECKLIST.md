@@ -14,7 +14,7 @@ Status: **not ready for public release**. Desktop source SHA: `80aef01eca657fa8a
 ## Pending before public release
 
 - [ ] Merge PR #3. The new four-platform draft workflow cannot be dispatched until it is on the default branch.
-- [ ] Dispatch `Desktop release draft` with `source_sha=80aef01eca657fa8a2dbe3340bac27e048619b11` and `create_draft=true`. It builds all four requested platforms in one workflow run (including missing macOS Intel) and will create only a Draft after every job and provenance check succeeds.
+- [ ] Dispatch `Desktop release draft` with `source_sha=80aef01eca657fa8a2dbe3340bac27e048619b11` and `create_draft=true`. It builds Windows x64, Linux x64, and macOS arm64 in one workflow run; macOS Intel is excluded because pinned MuJoCo has no CPython 3.11 Intel macOS wheel. It creates only a Draft after all required jobs and provenance checks succeed.
 - [ ] Confirm `SHA256SUMS` in the Draft, download the release assets and recompute each digest. Record final versioned URLs only after this fetch-back check.
 - [ ] Reconcile per-runner Python environment BOM and source-input SBOM with actual frozen runtime and packaged Electron contents. Add any native/transitive dependency notices; retain `NOASSERTION` where licensing cannot be established.
 - [ ] On Ubuntu, inspect the exact DEB metadata, desktop entry and icon; install, launch via desktop launcher/`gtk-launch`, and uninstall. Launch the exact AppImage. Capture evidence.
@@ -25,5 +25,5 @@ Status: **not ready for public release**. Desktop source SHA: `80aef01eca657fa8a
 ## Current artifact status
 
 - Available from Actions run `45564467771`: Windows x64 NSIS, Ubuntu x64 DEB, Ubuntu x64 AppImage, and macOS arm64 DMG. SHA256 values and filenames are listed in `DESKTOP_DISTRIBUTION_HANDOFF.md`. Build-generated hashes are recorded; full installer bytes have not all been downloaded/recomputed locally.
-- macOS Intel x64 is configured on native runner `macos-15-intel` in the new workflow but has no verified artifact yet.
+- macOS Intel x64 is not included in v0.1.0: the pinned `mujoco==3.17.0` dependency has no CPython 3.11 Intel macOS wheel, so pip attempts source compilation and requires an external MuJoCo SDK. Do not alter the runtime dependency solely to force this platform into the capstone release.
 - No `v0.1.0` tag, GitHub Release, or public download URL exists.

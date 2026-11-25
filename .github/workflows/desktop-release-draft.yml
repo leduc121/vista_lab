@@ -33,9 +33,6 @@ jobs:
           - id: macos-arm64
             os: macos-15
             target: --mac dmg --arm64
-          - id: macos-x64
-            os: macos-15-intel
-            target: --mac dmg --x64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Validate source SHA
@@ -66,7 +63,8 @@ jobs:
           python-version: '3.11'
 
       - run: python -m pip install -r requirements-edge.txt
-      - run: python -m pip inspect --local > release-python-inspect.json
+      - name: Capture build Python inventory
+        run: python -X utf8 -m pip inspect --local > release-python-inspect.json
       - run: python -m unittest discover -s edge/tests -v
       - run: npm ci
       - run: npm test
@@ -139,7 +137,6 @@ jobs:
           [[ $(find release-assets/final -maxdepth 1 -type f -name '*.deb' | wc -l) -eq 1 ]]
           [[ $(find release-assets/final -maxdepth 1 -type f -name '*.AppImage' | wc -l) -eq 1 ]]
           [[ $(find release-assets/final -maxdepth 1 -type f -name '*arm64*.dmg' | wc -l) -eq 1 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*x64*.dmg' | wc -l) -eq 1 ]]
           cp release-metadata/docs/desktop/DESKTOP_DISTRIBUTION_SBOM.cdx.json release-assets/final/SOURCE-INPUT-SBOM.cdx.json
           cp release-metadata/docs/desktop/THIRD_PARTY_NOTICES.md release-assets/final/THIRD_PARTY_NOTICES.md
           cp release-metadata/docs/desktop/RELEASE_NOTES_0.1.0.md release-assets/final/RELEASE_NOTES_0.1.0.md
