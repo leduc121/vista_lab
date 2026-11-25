@@ -134,20 +134,25 @@ jobs:
             [[ "$(cat "$dir/source-sha.txt")" == "$SOURCE_SHA" ]]
             platform="$(cat "$dir/platform-architecture.txt")"
             for file in "$dir"/*; do
-              case "$(basename "$file")" in
+              basename="$(basename "$file")"
+              case "$basename" in
                 source-sha.txt|platform-architecture.txt) continue ;;
               esac
-              if [[ "$(basename "$file")" == runtime-python-sbom.cdx.json ]]; then
+              case "$basename" in
+                'VISTA Lab Station-0.1.0-x64-setup.exe'|'VISTA Lab Station-0.1.0-amd64.deb'|'VISTA Lab Station-0.1.0-x86_64.AppImage'|'VISTA Lab Station-0.1.0-arm64.dmg') ;;
+                *.exe) continue ;;
+              esac
+              if [[ "$basename" == runtime-python-sbom.cdx.json ]]; then
                 cp "$file" "release-assets/final/${platform}-runtime-python-sbom.cdx.json"
               else
                 cp "$file" release-assets/final/
               fi
             done
           done
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.exe' | wc -l) -eq 1 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.deb' | wc -l) -eq 1 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*.AppImage' | wc -l) -eq 1 ]]
-          [[ $(find release-assets/final -maxdepth 1 -type f -name '*arm64*.dmg' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name 'VISTA Lab Station-0.1.0-x64-setup.exe' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name 'VISTA Lab Station-0.1.0-amd64.deb' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name 'VISTA Lab Station-0.1.0-x86_64.AppImage' | wc -l) -eq 1 ]]
+          [[ $(find release-assets/final -maxdepth 1 -type f -name 'VISTA Lab Station-0.1.0-arm64.dmg' | wc -l) -eq 1 ]]
           cp release-metadata/docs/desktop/DESKTOP_DISTRIBUTION_SBOM.cdx.json release-assets/final/SOURCE-INPUT-SBOM.cdx.json
           cp release-metadata/docs/desktop/THIRD_PARTY_NOTICES.md release-assets/final/THIRD_PARTY_NOTICES.md
           cp release-metadata/docs/desktop/RELEASE_NOTES_0.1.0.md release-assets/final/RELEASE_NOTES_0.1.0.md
