@@ -16,7 +16,7 @@ The SHA values above were read from each artifact's `SHA256SUMS`; embedded prove
 
 ### Versioned download URL plan
 
-There are **no verified download URLs**. Do not put download links on the website. GitHub API read access now works, but no exact-SHA run or Release assets exist. After a Draft is reviewed, approved, published, and downloaded back with matching hashes, GitHub's versioned URL pattern will be:
+There are **no verified public download URLs**. Do not put download links on the website. Exact-SHA Actions artifacts exist, but no GitHub Release assets exist yet. After a Draft is reviewed, approved, published, and downloaded back with matching hashes, GitHub's versioned URL pattern will be:
 
 ```text
 https://github.com/leduc121/vista_lab/releases/download/v0.1.0/<exact-filename>
@@ -51,9 +51,9 @@ CI-generated SHA256 values are recorded above for exact-SHA artifacts. No public
 
 ```sh
 set -eu
-file='VISTA Lab Station-0.1.0-amd64.deb' # replace with verified filename from exact-SHA CI run
+file='VISTA Lab Station-0.1.0-amd64.deb'
 url='<PENDING: exact URL appears only after the v0.1.0 Draft is approved and published>' # not a live URL
-expected='<SHA256 from that release SHA256SUMS>'
+expected='17cc236d082620da05ea8d3148a5a029387b4e35e6d0844010afad1c1b067d15'
 curl --fail --location --proto '=https' --proto-redir '=https' -o "$file" "$url"
 printf '%s  %s\n' "$expected" "$file" | sha256sum -c -
 sudo apt install "./$file"
@@ -66,9 +66,9 @@ Uninstall with `sudo apt remove vista-lab-station`. The old staged DEB declares 
 
 ```sh
 set -eu
-file='VISTA Lab Station-0.1.0-x86_64.AppImage' # replace with verified filename from exact-SHA CI run
+file='VISTA Lab Station-0.1.0-x86_64.AppImage'
 url='<PENDING: exact URL appears only after the v0.1.0 Draft is approved and published>'
-expected='<SHA256 from that release SHA256SUMS>'
+expected='3987709605965b50ff56de01bf2719c603da26d32cc4959c09dc1cf536fd6960'
 curl --fail --location --proto '=https' --proto-redir '=https' -o "$file" "$url"
 printf '%s  %s\n' "$expected" "$file" | sha256sum -c -
 chmod +x "$file"
@@ -77,7 +77,7 @@ chmod +x "$file"
 
 The tracked `releases/v0.1.0/install-linux.sh` also pins the candidate Linux hashes and supports `--appimage` and `--deb`. Its remote installation mode requires the approved HTTPS downloads root; it refuses plain HTTP and checks the SHA-256 before install. AppImage installs into the current user's data directory and does not need sudo. Remove its installed file at `${XDG_DATA_HOME:-$HOME/.local/share}/vista-lab-station/v0.1.0/VISTA-Lab-Station-0.1.0-x86_64.AppImage`. The script does not create a launcher entry for AppImage; run the file directly. Do not imply launcher integration is tested.
 
-**Linux acceptance status:** old candidate DEB desktop file/icon paths were inspected. Existing docs record AppImage/extracted-DEB launch smoke on a development host, not a clean system install. For exact-SHA CI package acceptance, install the DEB then launch it via the app launcher or `gtk-launch vista-lab-station`; uninstall using `sudo apt remove vista-lab-station`. For AppImage, launch `./<verified-AppImage>` and uninstall by deleting that downloaded file. Launcher opening, icon rendering and uninstall are not yet verified; do not claim a pass.
+**Linux acceptance status:** previous candidate DEB metadata was inspected, but the exact-SHA package has not been installed or opened on Ubuntu. Install the verified DEB, launch through the app launcher or `gtk-launch vista-lab-station`, and remove it with `sudo apt purge vista-lab-station`. Launch the AppImage directly and remove it by deleting the downloaded file. Exact-build launcher, icon, install and uninstall checks remain pending.
 
 The DEB install should register `/usr/share/applications/vista-lab-station.desktop` with `Icon=vista-lab-station`. Verify the exact package before installing:
 
@@ -108,10 +108,9 @@ Then in Desktop Settings select `edge/robot-runtime/.venv/bin/python` and the au
 
 ## Known limitations
 
-- No public release approval, no verified public download URLs, and no exact-merge-SHA artifacts yet.
-- macOS Intel runner is configured in the draft workflow but no DMG has completed verification; Apple Silicon likewise pending.
+- No public release approval or verified public download URLs. Windows x64, Linux x64, and macOS Apple Silicon artifacts exist in exact-SHA Actions run `45564467771`; macOS Intel is pending.
 - Windows and macOS clean-machine startup/runtime acceptance is outstanding; Windows/macOS signing and macOS notarization are unresolved.
-- Linux package metadata is inspected, but DEB install/uninstall and launcher behavior are not yet demonstrated on a clean Ubuntu/Debian desktop.
+- The exact-SHA Linux DEB metadata/payload has not yet been inspected locally; DEB install/uninstall, launcher/icon behavior, and AppImage launch remain unverified on Ubuntu.
 - Robotics needs external Python and Edge source checkout and is not self-contained. Hardware, enrollment/MQTT backend integration and physical robot operation are not release-certified.
 - checkIk redistribution permission is resolved by the owner grant; no license name is inferred. The source-input SBOM and third-party notices are prepared, but remain pending reconciliation against the exact native CI artifact contents and platform-specific transitive Python dependencies.
 - Simulation profile and functionality must be checked against the final artifact bytes before users are directed to download.
