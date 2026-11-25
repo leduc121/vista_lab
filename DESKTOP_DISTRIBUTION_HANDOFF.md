@@ -4,15 +4,15 @@
 
 ## Release summary and platform matrix
 
-| Platform / architecture | Requested artifact | Candidate filename | SHA-256 (local staged candidate) | Download status |
+| Platform / architecture | Requested artifact | Candidate filename | SHA-256 (CI build manifest from run `45564467771`) | Download status |
 | --- | --- | --- | --- | --- |
-| Windows x64 | NSIS `.exe` | Expected from current builder config: `VISTA Lab Station-0.1.0-x64-setup.exe` | **Pending** | **Pending**: no successful run exists for the requested SHA. Old local staged file has a different filename/build and must not be substituted. |
-| Ubuntu/Debian amd64 | `.deb` | Expected from current builder config: `VISTA Lab Station-0.1.0-amd64.deb` | **Pending** | **Pending**: no successful run exists for the requested SHA. Old local staged file has a different filename/build and must not be substituted. |
-| Linux x86_64 | AppImage | Expected from current builder config: `VISTA Lab Station-0.1.0-x86_64.AppImage` | **Pending** | **Pending**: no successful run exists for the requested SHA. Old local staged file has a different filename/build and must not be substituted. |
+| Windows x64 | NSIS `.exe` | `VISTA Lab Station-0.1.0-x64-setup.exe` | `47f1f1cdb6df911f8b11159990d1c15c0526b70666e8914a2300c4bae3b7b5fb` | Actions artifact from run `45564467771`; public Release URL pending. |
+| Ubuntu/Debian amd64 | `.deb` | `VISTA Lab Station-0.1.0-amd64.deb` | `17cc236d082620da05ea8d3148a5a029387b4e35e6d0844010afad1c1b067d15` | Actions artifact from run `45564467771`; public Release URL pending. |
+| Linux x86_64 | AppImage | `VISTA Lab Station-0.1.0-x86_64.AppImage` | `3987709605965b50ff56de01bf2719c603da26d32cc4959c09dc1cf536fd6960` | Actions artifact from run `45564467771`; public Release URL pending. |
 | macOS Intel x64 | `.dmg` | Expected from builder: `VISTA Lab Station-0.1.0-x64.dmg` | **Pending** | New draft workflow uses GitHub runner `macos-15-intel`; no artifact is verified yet. |
-| macOS Apple Silicon arm64 | `.dmg` | Expected from builder: `VISTA Lab Station-0.1.0-arm64.dmg` | **Pending** | Draft workflow uses native `macos-15` arm64; no exact-SHA artifact is verified yet. |
+| macOS Apple Silicon arm64 | `.dmg` | `VISTA Lab Station-0.1.0-arm64.dmg` | `dd100c8123159aa34fcef66168184c248e4dae6a6fe52f6f0e37f5d129216ef6` | Actions artifact from run `45564467771`; public Release URL pending. |
 
-The tracked `releases/v0.1.0/` contains older filenames and hashes; its manifest is not evidence for the merge SHA. `scripts/validate-download-release.cjs` only verifies internal consistency of that old local stage. Those files do not match the current builder's expected output names, and their Linux hashes differ from files in ignored `dist/`. Do not publish or combine any of these files with CI outputs. Generate final SHA values and `SHA256SUMS` only from the exact verified CI artifacts downloaded from one Actions run at the merge SHA.
+The SHA values above were read from each artifact's `SHA256SUMS`; embedded provenance records source SHA `80aef01eca657fa8a2dbe3340bac27e048619b11` and workflow run `45564467771`. They are CI-generated installer hashes, not yet recomputed from full local installer downloads. The tracked `releases/v0.1.0/` contains older filenames and hashes; its manifest is not evidence for the merge SHA. `scripts/validate-download-release.cjs` only verifies internal consistency of that old local stage. Those files do not match the current builder's expected output names, and their Linux hashes differ from files in ignored `dist/`. Do not publish or combine any of these files with CI outputs. Generate final SHA values and `SHA256SUMS` only from the exact verified CI artifacts downloaded from one Actions run at the merge SHA.
 
 ### Versioned download URL plan
 
@@ -45,7 +45,7 @@ After the branch PR is merged: repository `leduc121/vista_lab` â†’ **Actions** â
 
 ## Linux installation and website command snippets
 
-No public download URL or artifact hash has been verified. These commands become copy-paste ready only after the Draft is approved/published and the assets are fetched back with matching SHA256. Substitute only exact filenames and hashes shown in that verified Release; do not copy placeholders to the homepage.
+CI-generated SHA256 values are recorded above for exact-SHA artifacts. No public download URL exists yet. These commands become copy-paste ready only after the Draft is approved/published and the assets are fetched back with matching SHA256. Substitute only exact filenames and hashes shown in that verified Release; do not copy placeholders to the homepage.
 
 ### Ubuntu/Debian `.deb`
 
@@ -130,4 +130,4 @@ Then in Desktop Settings select `edge/robot-runtime/.venv/bin/python` and the au
 
 ## Current stop point
 
-GitHub API connectivity and `gh` authentication are restored. The first exact-SHA dispatch failed after packaging because electron-builder attempted to publish without a token; no artifacts were uploaded. Both workflows now force `--publish never`. I will rerun exact-SHA CI after this PR update. Hashes and live download links remain pending until artifact download/verification. The Draft workflow builds the requested source SHA on native runners and prepares the release files after it is merged. The Draft workflow is not public-release approval.
+GitHub API connectivity and `gh` authentication are restored. The first exact-SHA dispatch failed because electron-builder attempted an implicit publish; workflow change `--publish never` fixed it. Successful exact-SHA run `45564467771` built Windows x64, Ubuntu x64 and macOS arm64, and its checksums/provenance are confirmed. macOS Intel is supported by the new draft workflow but cannot be dispatched until PR #3 is merged because GitHub requires that workflow on the default branch. No v0.1.0 Release or public download URL exists. Ubuntu DEB install/launcher acceptance, Simulation Profile smoke from final artifact, dependency/notices reconciliation, macOS Intel artifact and post-release fetch-back remain pending. Do not publish until those gates pass and you approve. The Draft workflow builds the requested source SHA on native runners and prepares the release files after it is merged. The Draft workflow is not public-release approval.
