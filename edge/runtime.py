@@ -437,6 +437,17 @@ class EdgeRuntime:
         resource = "local-so101-simulation"
         runtime_kind = self._mqtt_config["runtimeKind"]
         frames: list[dict[str, Any]] = []
+        command_id = envelope["commandId"]
+
+        def emit_frame(frame: dict[str, Any]) -> None:
+            frames.append(frame)
+            if self.mqtt_transport is None:
+                return
+            telemetry = {"schema_version": 1, "robot_id": envelope["robotId"], "source_mode": "SIMULATION",
+                         "controller_id": "edge-mqtt-mujoco", "sequence": self.mqtt_transport.last_telemetry_sequence + 1,
+                         "measured_at": frame["measured_at"], "connection": "connected", "measured": frame["measured"]}
+            self.mqtt_transport.publish_telemetry(telemetry, command_id=command_id)
+
         self.mujoco.action_guard = self._mujoco_action_guard(
             resource, "MQTT", robot_id=envelope["robotId"], runtime_kind=runtime_kind)
         try:
@@ -444,15 +455,11 @@ class EdgeRuntime:
                 {"id": envelope["commandId"], "expiresAt": envelope["expiresAtMs"],
                  "speed": 1.0, "steps": payload["program"]["steps"]},
                 {"allowed": True, "attemptId": run_id, "expiresAt": envelope["expiresAtMs"]},
-                {"id": run_id, "status": "in_progress"}, "RUN_SIMULATION", frames.append)
+                {"id": run_id, "status": "in_progress"}, "RUN_SIMULATION", emit_frame)
         finally:
             self.mujoco.action_guard = None
-        if frames and self.mqtt_transport is not None:
-            latest = frames[-1]
-            frame = {"schema_version": 1, "robot_id": envelope["robotId"], "source_mode": "SIMULATION",
-                     "controller_id": "edge-mqtt-mujoco", "sequence": self.mqtt_transport.last_telemetry_sequence + 1,
-                     "measured_at": latest["measured_at"], "connection": "connected", "measured": latest["measured"]}
-            self.mqtt_transport.publish_telemetry(frame)
+            if self.mqtt_transport is not None:
+                self.mqtt_transport.end_telemetry_run(command_id)
         return result
 
     def _physical_action(self, slot: str, positions: list[float], sequence: int, occurred_at: float,

@@ -1,5 +1,58 @@
 # VISTA Final Acceptance Evidence — 2026-11-25
 
+## Final overnight reconciliation — 2026-11-27
+
+This is the current evidence summary and supersedes older status statements below where they differ. It reconciles the supplied VISTA Master Prompt, the final Claude handoff, current Desktop implementation, package checkpoint and current Production source. Do not read local/fake tests as Cloud or physical acceptance.
+
+### Source, PR, CI and package
+
+- The final implementation and evidence changes are on a follow-up branch based on current `main` (`e2f03cc`), distinct from merged PR #6. The branch, commit, PR and current Actions result are recorded in the distribution handoff and PR; earlier native runs on the prior head were **CANCELLED**, not CI PASS.
+- The private Ubuntu amd64 DEB checkpoint is version `0.1.1`, built from source `13fd11fa031168ed1d237784293c00b35d5794ca`; size `148156302` bytes; SHA-256 `402aeca230f4362f0f1e2f2336b606c340cee776478a94595fdf1f4c8a2a7e42`. Package metadata is `vista-lab-station`, `0.1.1`, `amd64`; dependencies are GTK, NSS, XSS, XTest, XDG, AT-SPI, UUID and Secret Service libraries. The launcher is `/opt/VISTA Lab Station/vista-lab-station`. Package extraction, runtime/startup checks and checksums passed for that build; it was not installed system-wide or published.
+- The local package provenance says `workflow_run_id=unavailable-local-build`, so it is not a GitHub Actions build artifact. Its four-file `SHA256SUMS` passes; the CycloneDX Python runtime SBOM and 568-file third-party license/notice archive are included and checksummed. The later MQTT correction in this report is not in that DEB; the final PR's native Ubuntu Actions artifact must be checked against the final source SHA before claiming a package for that revision. v0.1.0 remains untouched. No Windows/macOS package is part of the release handoff.
+
+### Implementation and test status
+
+| Area | Current status | Evidence boundary |
+|---|---|---|
+| R1 physical SO-101 adapter | **IMPLEMENTED / SYNTHETIC TESTED; PHYSICAL NOT RUN** | LeRobot 0.6.1/0.6.2 follower adapter, measured named joints, exclusive serial ownership and safety-gated output exist. The default runtime denies hardware connection; the optional Python 3.12 LeRobot environment is external to the DEB. No serial device, calibration write or physical motion occurred. |
+| Safety Controller | **IMPLEMENTED / TESTED IN FAKES** | Shared source gate covers owner lease, arming, E-stop latch, watchdog, command freshness, joint/velocity limits and shutdown. No physical E-stop circuit or stop behavior was verified. |
+| MQTT commands/mTLS | **IMPLEMENTED / FAKE TESTED; AWS NOT RUN** | Command identity, expiry, deduplication and ACK/execution lifecycle tests use an injected broker. No certificate/principal is attached; no real mTLS connection or command was sent. |
+| Device Shadow | **IMPLEMENTED LOCALLY; PRODUCTION FRESHNESS UNVERIFIED** | Desktop reports runtime state and 10-second heartbeat in local transport tests. Production Edge at `f0b3d8735b608aac8670a200ff45eddf6fa24ab5` reports on connect/command without an idle heartbeat; no fresh Shadow was verified. |
+| Simulation telemetry | **LOCAL CONTRACT PASS; CLOUD BLOCKED** | Desktop now wraps live MuJoCo callback frames as correlated `status/telemetry` events and enforces ≤2 Hz / ≤120 frames per command. Focused tests passed 16/16; the complete `edge/.venv` suite passed 96/96. Production R1 still emits an uncorrelated legacy `/telemetry` payload that the deployed rule/bridge drops. |
+| Physical measured telemetry | **MEASURED READ API IMPLEMENTED; CLOUD NOT RUN** | Adapter reads actual named follower observations; no physical measurement was taken and no physical MQTT/Twin frame was accepted. The deployed Production bridge cannot establish a ready Cloud path until its Edge publisher and Shadow heartbeat are corrected. |
+| Student authentication | **IMPLEMENTED / CONTRACT TESTED; DESKTOP LIVE FLOW NOT RUN** | Desktop uses the existing authenticated Education API session contract. The Master Prompt reports Student 1's existing Production eligibility and access checks; this does not prove Desktop-to-Production experiment persistence. |
+| Recording/evidence | **LOCAL INTEGRITY TESTED; PRODUCTION UPLOAD/REVIEW NOT RUN** | `vista.robot.recording.v1` manifest/hash handling and the local mock recording fixture pass. Upload remains restricted to verified stopped physical recordings; simulation is not uploaded through that route. No Cloud evidence or instructor review is claimed. |
+| Registered dual-arm scope | **LOCAL PAIR WIRING RETAINED; CLOUD SINGLE FOLLOWER ONLY** | Two leader/follower pairs remain in local registered scope; physical dual-arm acceptance is not run. Existing Cloud Thing/Twin owner supports one follower only; do not claim dual-arm Cloud. |
+
+### Actual acceptance performed
+
+- **Local hardware-disabled simulation:** the complete Edge suite passed 96 tests, including an actual MuJoCo-backed fake-broker command lifecycle and local recording-integrity contract. It is **NOT Cloud acceptance** and creates no Production student result.
+- **Production data/access:** the latest supplied Master Prompt reports the existing entitlement, VISTA Academy isolation, Blockly profile, School Admin allocation, instructor visibility, symbolic prerequisite and Student 1 eligibility completed; Student 2 and foreign-organization access were denied. This pass did not freshly query the database. VISTA Academy isolation was verified only against DB state, not through an Academy student login.
+- **Read-only Production/AWS checks from this session:** API health/readiness returned healthy/ready; version was `f0b3d873…`; the existing feedback/recording queues had zero visible, in-flight and delayed counts at inspection; the existing Thing had no principal. These are point-in-time checks. The current IoT data-endpoint read was blocked by the shell's network boundary, so Shadow state/freshness is **NOT VERIFIED**.
+- **Cloud simulation:** **NOT RUN**. The current Production Edge telemetry/heartbeat mismatch, absent certificate, unverified Shadow and unapproved Phase A activation are blockers.
+- **Physical SO-101:** **NOT RUN**. No hardware, serial, calibration, arming, motion, physical telemetry or physical recording upload was used.
+- **Latency:** **NOT MEASURED**. Use the timing procedure in [AWS Acceptance Runbook](AWS_ACCEPTANCE_RUNBOOK.md) during actual Cloud acceptance; do not reuse a source estimate.
+
+### Remaining owner gates and ordered next actions
+
+1. Backend owner authorizes and deploys the smallest fix for command-correlated simulation telemetry on the Production rule's accepted `/status` topic and an idle Shadow heartbeat ≤10 seconds. Then verify the live SHA and fresh honest `MOCK_RUNTIME`/hardware-disabled Shadow. Desktop cannot change the separate Backend checkout in this session.
+2. After that fix, the owner approves creation of one inactive device certificate, attachment to the existing Thing and scoped policy, then activation on the Edge host. Run the mTLS and Shadow-read verification; keep Backend MQTT start flag off during that check.
+3. Owner approves the existing Phase A secret update and Education CI `action=deploy` with `aws-demo` approval only after certificate, Shadow, API/worker/Twin health and the already-provisioned dataset are confirmed. No Production database changes are pending per the latest Master Prompt.
+4. Run the actual Student 1 Cloud simulation workflow on the existing R1126-1901 assignment/attempt, verify correlation, authorization, lifecycle, Twin simulation provenance, evidence and instructor review, and record measured latency. Do not use direct MQTT command publication.
+5. Tomorrow's physical session remains separate: owner/operator approval, exact Python 3.12/LeRobot environment, one `leader-a`/`follower-a` pair only, verified calibration and safe-stop configuration, then minimal supervised local motion. Phase B Cloud physical configuration requires a later separate approval and successful Cloud simulation first.
+
+### Defense demonstration and offline fallback
+
+**Live Production demonstration is conditional and not presently accepted.** Do not show unavailable Cloud connection, fresh Shadow, Cloud MuJoCo frame relay, instructor evidence or physical motion as if completed. When the Cloud gates pass, demonstrate: existing classroom/assignment and Student 1 prerequisite → Desktop sign-in/runtime profile → actual mTLS and fresh Shadow → authorized simulation start → correlated ACK/executing/completed → delayed, correctly labelled Twin frames → supported result/evidence → instructor review. Add the physical step only after its own supervised acceptance.
+
+**Offline fallback (clearly label every view “LOCAL OFFLINE SIMULATION — NOT CLOUD / NOT PHYSICAL”):** start the Desktop Demo/simulation profile with `VISTA_IOT_ENABLED` unset; show the bundled SO-101 MuJoCo model, bounded Blockly action, measured six-joint simulation frames, safe stop and local result. Use Demo fixtures only; do not sign into a student account or imply server persistence. Do not rely on connected hardware.
+
+### Rollback and shutdown
+
+- Cloud Phase A: disable IoT first or restore the recorded prior Secrets Manager version, then use the existing Education CI `action=deploy` reload; verify student IoT start is refused and workers/Twin are healthy. Do not mutate other secret values or run a Backend rollback without owner approval.
+- Device: stop runtime, ensure no active command, close MQTT, set the approved certificate inactive, detach policy and Thing principal, and delete only that specifically created certificate if the owner chooses rollback. Keep private key only on the designated Edge host or securely remove it per owner direction.
+- Physical: stop motion with the verified safe-stop, E-stop if needed, disarm, release the control lease, disconnect leader then follower, verify port ownership released and no active command, shut down Edge, and close the owner-authorized window. Never leave the robot armed or auto-resume after reconnect.
+
 ## Final project closure and Claude handoff — owner-reported release, 2026-11-25
 
 The owner states that Ubuntu v0.1.0 completed its approved release process. This workspace has no refreshed Draft/release manifest or owner-tested artifact record, and its previous anonymous GitHub fetch failed because DNS/network access was unavailable. Treat the owner statement as the release approval; treat the exact public asset, source tag, checksum, and anonymous-download state below as **not independently verified here**.

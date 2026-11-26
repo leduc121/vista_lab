@@ -85,6 +85,43 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(running["armed"])
         self.assertFalse(running["stopped"])
 
+    def test_simulation_telemetry_is_correlated_and_published_during_command(self):
+        import time
+
+        class FakeMujoco:
+            action_guard = None
+            def execute(self, _command, _policy, _run, _method, on_frame):
+                on_frame({"measured_at": "2026-11-27T00:00:00Z",
+                          "measured": [{"name": name, "position": 0.0, "unit": "rad"} for name in JOINTS]})
+                self.result_returned = True
+                return {"state": "succeeded"}
+
+        class FakeTransport:
+            last_telemetry_sequence = -1
+            def __init__(self): self.events=[]; self.ended=[]
+            def publish_telemetry(self, frame, *, command_id):
+                self.events.append((frame, command_id, hasattr(mujoco, "result_returned") and mujoco.result_returned))
+                self.last_telemetry_sequence = frame["sequence"]
+                return True
+            def end_telemetry_run(self, command_id): self.ended.append(command_id)
+
+        mujoco, transport = FakeMujoco(), FakeTransport()
+        self.runtime.mujoco = mujoco
+        self.runtime.mqtt_transport = transport
+        self.runtime._mqtt_config = {"runtimeKind": "SIMULATION"}
+        command = "7b2f9c1e-0d34-4c6a-8e51-2a9b6d4c7f03"
+        result = self.runtime._execute_mqtt_simulation({"commandId": command, "robotId": "f1c066c4-b5f2-45c4-b933-f034f3824dd9",
+            "expiresAtMs": int(time.time() * 1000) + 5000,
+            "payload": {"runId": "run-1", "program": {"steps": []}}})
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(len(transport.events), 1)
+        frame, event_command, completed_before_publish = transport.events[0]
+        self.assertEqual(event_command, command)
+        self.assertFalse(completed_before_publish)
+        self.assertEqual((frame["robot_id"], frame["source_mode"], frame["sequence"]),
+                         ("f1c066c4-b5f2-45c4-b933-f034f3824dd9", "SIMULATION", 0))
+        self.assertEqual(transport.ended, [command])
+
     def test_physical_lerobot_connection_requires_injected_owner_authorization(self):
         calls = []
         class SyntheticFollower:

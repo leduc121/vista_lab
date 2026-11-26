@@ -74,6 +74,8 @@ class MqttTransport:
         self.last_error: str | None = None
         self.last_command: str | None = None
         self.last_telemetry_sequence = -1
+        self._telemetry_run_counts: dict[str, int] = {}
+        self._telemetry_run_last_publish: dict[str, float] = {}
         self.lock = threading.RLock()
         self.dedupe_healthy = True
         self.seen: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
@@ -350,8 +352,10 @@ class MqttTransport:
         payload.setdefault("robotId", self.robot_id); payload.setdefault("schemaVersion", 1); payload.setdefault("occurredAtMs", int(time.time()*1000))
         return int(self.client.publish(self.topics["status"], json.dumps(payload, separators=(",", ":")), qos=1, retain=False).rc) == 0
 
-    def publish_telemetry(self, telemetry: dict[str, Any]) -> bool:
+    def publish_telemetry(self, telemetry: dict[str, Any], *, command_id: str) -> bool:
         if not isinstance(telemetry, dict) or len(json.dumps(telemetry).encode()) > MAX_MESSAGE_BYTES: raise ValueError("Telemetry payload is invalid or too large.")
+        try: UUID(command_id)
+        except (ValueError, TypeError, AttributeError) as error: raise ValueError("Telemetry requires a correlated command UUID.") from error
         measured = telemetry.get("measured")
         if (telemetry.get("robot_id") != self.robot_id or telemetry.get("schema_version") != 1
                 or telemetry.get("source_mode") != "SIMULATION" or not isinstance(telemetry.get("controller_id"), str)
@@ -366,9 +370,26 @@ class MqttTransport:
                     or not isinstance(row.get("position"), (int, float)) or not math.isfinite(row["position"])):
                 raise ValueError("Telemetry must contain the ordered six-joint SO-101 contract in deg or rad.")
         if telemetry["sequence"] <= self.last_telemetry_sequence: raise ValueError("Telemetry sequence must increase monotonically.")
-        self.last_telemetry_sequence = telemetry["sequence"]
         if not self.client or not self.connected.is_set(): return False
-        return int(self.client.publish(self.topics["telemetry"], json.dumps(telemetry, separators=(",", ":")), qos=1, retain=False).rc) == 0
+        now = time.monotonic()
+        count = self._telemetry_run_counts.get(command_id, 0)
+        last = self._telemetry_run_last_publish.get(command_id)
+        if count >= 120 or (last is not None and now - last < 0.5): return False
+        sequence = telemetry["sequence"]
+        event = {"schemaVersion": 1, "kind": "status", "status": "telemetry",
+                 "robotId": self.robot_id, "commandId": command_id,
+                 "eventId": f"{command_id}:telemetry:{sequence}", "sequence": sequence,
+                 "occurredAtMs": int(time.time() * 1000), "telemetry": telemetry}
+        published = int(self.client.publish(self.topics["status"], json.dumps(event, separators=(",", ":")), qos=1, retain=False).rc) == 0
+        if published:
+            self.last_telemetry_sequence = sequence
+            self._telemetry_run_counts[command_id] = count + 1
+            self._telemetry_run_last_publish[command_id] = now
+        return published
+
+    def end_telemetry_run(self, command_id: str) -> None:
+        self._telemetry_run_counts.pop(command_id, None)
+        self._telemetry_run_last_publish.pop(command_id, None)
 
     def _schedule_heartbeat(self):
         self._cancel_heartbeat()

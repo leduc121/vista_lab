@@ -1,5 +1,14 @@
 # Queue 5 final Desktop acceptance — 2026-11-20
 
+## Overnight final verification — 2026-11-27
+
+- Final full Edge suite after the MQTT simulation telemetry correction: **96 passed** with `edge/.venv/bin/python -m unittest discover -s edge/tests -v` (MuJoCo-backed, hardware-disabled fixtures). This supersedes historical 88/94-test counts below. No hardware or AWS endpoint was used.
+- Final Desktop API/IPC and Electron Node regression: `npm test` passed **26 contract checks + 19 Node tests**. No live student sign-in was performed.
+- The 16-test focused correction suite also passed. It verifies correlation and telemetry order during execution, event envelope, rate/frame limits, and local recording manifest integrity. This is **local simulation only**, not Cloud acceptance.
+- Follow-up implementation is prepared against current `main`; exact branch, commit, PR and CI must be read from the live GitHub status and Distribution Handoff after the final push. Earlier runs on the previous head were cancelled and do not count as passing CI.
+- Existing private `0.1.1` Ubuntu DEB checkpoint is independently recorded below in [Desktop Distribution Handoff](../../DESKTOP_DISTRIBUTION_HANDOFF.md), but it was built locally from `13fd11f`, before this telemetry correction. It is not the final PR build artifact. `0.1.0` was not overwritten and no new public release was made.
+- AWS certificate activation, Production flag reload, live Shadow/mTLS, Cloud simulation E2E, physical connection/calibration/motion, physical upload and instructor review were not run. The exact owner gates and execution sequence are in [AWS Acceptance Runbook](AWS_ACCEPTANCE_RUNBOOK.md) and [Hardware Commissioning Runbook](HARDWARE_COMMISSIONING_RUNBOOK.md).
+
 ## Final targeted engineering verification — 2026-11-27
 
 - Final Edge regression selection: **67 passed** across local WF03, MQTT command validation/lifecycle, runtime/adapters, shared Safety Controller, serial ownership, watchdog/teleoperation, and calibration. CHECKIK and MuJoCo model/simulation suites: **13 passed**. Physical adapters were synthetic; no serial hardware was opened.

@@ -88,13 +88,18 @@ class LocalWF03Acceptance(unittest.TestCase):
             self.assertEqual((rejected[-1]["status"], rejected[-1]["code"]), ("rejected", "execution_owned_by_another_source"))
             runtime.safety.release("local-so101-simulation", reason="test_complete")
             client.on_message(client, None, msg)
-            lifecycle = [p[1] for p in client.published if p[1].get("commandId") == COMMAND]
-            self.assertEqual([e["status"] for e in lifecycle], ["rejected", "accepted", "executing", "completed"])
+            lifecycle = [p[1] for p in client.published if p[1].get("commandId") == COMMAND and p[1].get("status") != "telemetry"]
+            self.assertEqual([e["status"] for e in lifecycle], ["rejected", "accepted", "executing", "completed"], lifecycle[-1])
             self.assertTrue(all(e["robotId"] == ROBOT for e in lifecycle))
             self.assertEqual(runtime.safety.status()["owners"], {})
-            telemetry = [p[1] for p in client.published if p[0] == runtime.mqtt_transport.topics["telemetry"]]
-            self.assertTrue(telemetry)
-            self.assertEqual(telemetry[-1]["robot_id"], ROBOT)
+            telemetry_events = [p[1] for p in client.published if p[0] == runtime.mqtt_transport.topics["status"] and p[1].get("status") == "telemetry"]
+            self.assertTrue(telemetry_events)
+            self.assertEqual(telemetry_events[-1]["robotId"], ROBOT)
+            self.assertEqual(telemetry_events[-1]["commandId"], COMMAND)
+            self.assertEqual(telemetry_events[-1]["telemetry"]["robot_id"], ROBOT)
+            self.assertLess(client.published.index(next(p for p in client.published if p[1].get("status") == "telemetry")),
+                            max(i for i, p in enumerate(client.published) if p[1].get("status") == "completed"))
+            telemetry = telemetry_events[-1]["telemetry"]
 
             # Reuse Desktop's actual Node RecordingManager and manifest writer.
             js = r'''const {RecordingManager}=require('./recording-manager');
@@ -106,7 +111,7 @@ manager.append({measured:true,unit:'rad',timestamp:Date.now()/1000,joints});
 const stopped=manager.stop();
 process.stdout.write(JSON.stringify({episodeId:episode.episodeId,manifest:manager.get(episode.episodeId).manifest,sha256:stopped.sha256,artifact:require('node:fs').readFileSync(manager.directory(episode.episodeId)+'/trajectory.ndjson','utf8')}));'''
             completed = subprocess.run(["node", "-e", js, str(Path(tmp) / "recordings"),
-                json.dumps(telemetry[-1]), EXPERIMENT, ROBOT], check=True, capture_output=True, text=True)
+                json.dumps(telemetry), EXPERIMENT, ROBOT], check=True, capture_output=True, text=True)
             recorded = json.loads(completed.stdout)
             self.assertEqual(recorded["manifest"]["experimentId"], EXPERIMENT)
             self.assertEqual(recorded["manifest"]["robotId"], ROBOT)

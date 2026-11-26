@@ -1,5 +1,13 @@
 # VISTA Lab Station 0.1.0 — Ubuntu Distribution Handoff
 
+## Current overnight release checkpoint — 2026-11-27
+
+The owner reports that Ubuntu amd64 `0.1.0` has already been publicly released. This pass did not replace or republish it. A private `0.1.1` candidate exists at `dist/ubuntu-0.1.1-checkpoint/`: 148,156,302 bytes, SHA-256 `402aeca230f4362f0f1e2f2336b606c340cee776478a94595fdf1f4c8a2a7e42`, package `vista-lab-station`, architecture `amd64`, with the dependencies listed below. Its source is `13fd11fa031168ed1d237784293c00b35d5794ca`; provenance records a local build (`workflow_run_id=unavailable-local-build`), so it does **not** prove the final follow-up PR source. The archive, SBOM, third-party notices and their hashes were verified for that candidate. No `0.1.1` public release was created.
+
+The final PR's Ubuntu Actions artifact must be checked against its exact source SHA before it can become the next release candidate. Verify DEB metadata, runtime dependencies, launcher, startup, SHA-256, provenance and third-party notices from that artifact. Do not invoke the legacy `desktop-release-draft.yml`: it is pinned to `0.1.0`. Keep Windows/macOS outside this release scope. See [Final Acceptance Evidence](docs/desktop/FINAL_ACCEPTANCE_EVIDENCE.md) and [AWS Acceptance Runbook](docs/desktop/AWS_ACCEPTANCE_RUNBOOK.md) for the current integrated acceptance boundaries.
+
+The released `0.1.0` asset's bytes and published checksum are **not independently re-fetched in this workspace**. Keep the prior “owner-reported” qualification below; do not use historical workspace candidate hashes as the published checksum.
+
 **Release state:** The owner reports Ubuntu amd64 v0.1.0 completed its approved release process. This workspace cannot independently fetch the current Release or asset, so its published checksum, size, tag target, and owner-tested revision are **not verified here**. Canonical owner-designated URLs are the [v0.1.0 Release](https://github.com/leduc121/vista_lab/releases/tag/v0.1.0) and [Ubuntu DEB](https://github.com/leduc121/vista_lab/releases/download/v0.1.0/VISTA.Lab.Station-0.1.0-amd64.deb). Do not use a historical workspace candidate hash as the published checksum.
 
 **Acceptance reports (2026-11-25):** [Final Robotics Lab Acceptance](docs/desktop/ROBOTICS_LAB_FINAL_ACCEPTANCE_2026-11-25.md) records the corrected local candidate; [Final Education Platform Integration Handoff](docs/desktop/FINAL_EDUCATION_PLATFORM_INTEGRATION_HANDOFF_2026-11-25.md) records Web/AWS boundaries; [Final Installation and Student UX Acceptance](docs/desktop/FINAL_INSTALLATION_STUDENT_UX_ACCEPTANCE_2026-11-25.md) records package/install limits and student workflow.
