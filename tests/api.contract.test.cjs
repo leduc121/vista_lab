@@ -1,9 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createClient } = require('../api');
 const { isTrustedMainFrame, validateTwinWsUrl, validateEvidenceDownloadUrl } = require('../ipc-security');
+
+test('Electron IPC permits authenticated experiment evidence listing', () => {
+  const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const allowlist = mainSource.match(/const allowed = new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(allowlist, 'main process API method allowlist must exist');
+  const methods = [...allowlist[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  assert.ok(methods.includes('experimentArtifacts'), 'renderer evidence listing must reach the authenticated Education API client');
+});
 
 test('Demo assignment fixtures declare the Blockly programming contract', async () => {
   const client = createClient({ mock: true });

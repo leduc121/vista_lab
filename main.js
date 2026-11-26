@@ -548,7 +548,7 @@ app.whenReady().then(() => {
       'createProgramVersion', 'submitAttempt', 'createSchematicExperiment', 'runSchematic',
       'experimentStatus', 'experimentEvents', 'experimentResult', 'physicalEligibility',
       'activePhysicalExecution', 'physicalStatus', 'programVersions',
-      'digitalTwinAvailability', 'issueTwinViewerScope', 'requestRecordingUpload', 'experimentRecordings', 'recordingDownload'
+      'experimentArtifacts', 'digitalTwinAvailability', 'issueTwinViewerScope', 'requestRecordingUpload', 'experimentRecordings', 'recordingDownload'
     ]);
     if (!allowed.has(method) || typeof client[method] !== 'function') return { ok: false, error: 'Method not allowed' };
     try {

@@ -1,61 +1,120 @@
-# VISTA Lab Station — User Guide
+# VISTA Lab Station — English User Guide
 
-## 1. Install and launch
+This guide describes the Ubuntu amd64 v0.1.0 release. The owner reports that its approved release process is complete. Public access and the final published asset checksum were not independently verified from this workspace; compare the downloaded file against the checksum shown with the official release before installing. The current application interface is partly Vietnamese and partly English; this guide does not imply a complete English UI locale.
 
-Use the versioned installer produced for your operating system. Linux candidates are an AppImage and a Debian package; Windows uses the NSIS installer; macOS uses a DMG when its native build is available. The current candidate is unsigned and is for internal review only. Do not distribute it publicly until the ownership and asset-provenance review is complete.
+## 1. Download, verify, install, launch, and remove
 
-On Linux, serial access may require membership in the `dialout` group or the distribution's `uaccess` rule. Sign out and back in after changing group membership. The application reports serial permission and runtime errors in Diagnostics.
+Official release page (owner-designated): <https://github.com/leduc121/vista_lab/releases/tag/v0.1.0>
 
-## 2. First run and sign-in
+Ubuntu amd64 DEB: <https://github.com/leduc121/vista_lab/releases/download/v0.1.0/VISTA.Lab.Station-0.1.0-amd64.deb>
 
-Use the student account issued by the course administrator. VISTA keeps the session in the operating system's secure storage when available. If sign-in or token refresh fails, check the configured Education API environment and network connection; do not paste tokens into logs or support messages.
+Download to a temporary path and calculate its SHA-256:
 
-Demo mode is an offline UI fixture. It does not establish API authorization, robot entitlement, physical connection, or evidence persistence.
+```sh
+curl -fL "https://github.com/leduc121/vista_lab/releases/download/v0.1.0/VISTA.Lab.Station-0.1.0-amd64.deb" -o /tmp/vista-lab-station.deb
+sha256sum /tmp/vista-lab-station.deb
+```
 
-## 3. Runtime and safety
+Compare the displayed digest against the exact DEB entry in the official v0.1.0 release's `SHA256SUMS` before proceeding. Stop if the asset or checksum is unavailable or different. Historical local candidate hashes describe different files and are not a substitute for the published hash.
 
-The default runtime is local simulation with `fakeRobot=true` and `hardwareEnabled=false`. Dashboard state reflects runtime evidence and does not infer physical readiness from a cloud or MQTT connection.
+Install only after checksum verification; APT resolves the package's declared system dependencies:
 
-Settings offers Simulation (the bundled Python 3.11 profile) and an optional Robotics profile. For Robotics, select a Python 3.12.14 environment recreated from `edge/robot-runtime/pyproject.toml` and `uv.lock`, then select an authorized VISTA source checkout containing `edge/runtime.py`. The app validates CPU-only Torch and LeRobot imports, shuts the current runtime down before starting the selected profile, and refuses a profile switch while an arm is connected or executing. The package does not bundle the source checkout because checkIk-derived redistribution rights are unresolved. Selecting Robotics does not connect or arm hardware; hardware authorization remains disabled.
+```sh
+sudo apt install /tmp/vista-lab-station.deb
+```
 
-Use the Emergency Stop control to latch the local safety controller. Reset requires explicit confirmation and does not arm motion. Physical control remains unavailable until device identity, calibration, limits, hardware stop strategy, and operator authorization have each been verified. Keep the robot's physical emergency-stop circuit accessible during any separately approved hardware acceptance.
+The package targets Ubuntu amd64. The locally recorded build host was Ubuntu 26.04.1; the exact Ubuntu release used for the owner's final install acceptance is not present in this workspace record.
 
-## 4. Simulation workspace
+Launch **VISTA Lab Station** from the Education menu, or run:
 
-Open the assigned lab workspace, review the program, and choose the simulation run action. MuJoCo runs locally. The Digital Twin and telemetry views display the source mode and freshness of available state.
+```sh
+vista-lab-station
+```
 
-Cartesian checkIk IK is labeled **Experimental simulation only**. Its URDF and MuJoCo gripper-frame models have a measured systematic offset close to the 20 mm rejection threshold. Prefer manual joint controls for a predictable simulation workflow until model frames are reconciled.
+To reinstall the same candidate, remove and install again:
 
-## 5. Robot devices and calibration
+```sh
+sudo apt remove vista-lab-station
+sudo apt install /tmp/vista-lab-station.deb
+```
 
-The device page can discover serial ports and assign Leader A, Follower A, Leader B, or Follower B. A serial port can belong to one arm only. Firmware and identity fields are shown only when the runtime supplies them.
+To uninstall:
 
-Calibration is an operator-guided hardware procedure that can write motor registers. In this release candidate, hardware is disabled by default; do not attempt physical calibration or motion unless the project owner has approved the hardware checklist and the app reports all safety prerequisites as verified.
+```sh
+sudo apt purge vista-lab-station
+```
 
-## 6. Teleoperation
+The package removal keeps the per-user application data directory. Remove local student data from the app or OS user account only under the lab's retention policy.
 
-The normal teleoperation panel exercises isolated fake/simulation pairs. Each pair has its own safety ownership; loss of deadman, stale commands, or disconnect stops the pair. Physical Leader-to-Follower execution is implemented behind the same safety gate but remains fail-closed pending hardware commissioning.
+## 2. Sign in and open an assigned lab
 
-## 7. Recording and evidence
+Use the student account provided by the course administrator. Sign-in and assigned lab access require the configured Education API and network. Demo mode is an explicitly labeled local fixture; it does not authorize a student, load a real assignment, or save a result to the platform.
 
-Recordings are written under the application's user-data directory. Stop a recording before replay or upload. The manifest uses `vista.robot.recording.v1`; the trajectory SHA-256 is shown in the episode library. Local Recorded, Uploading, Uploaded, Processing, Verified, and Failed describe different states; only an Education API evidence response can establish Uploaded or Verified status.
+Open **My Labs**, select the assigned lab, review its details and preflight status, then choose **Mở Blockly & Simulation** (the current UI label) to open the existing Blockly workspace. Save, submit, and server results depend on the live Education API. Do not treat Demo fixture status as a real submission.
 
-The local WF03 acceptance uses a mock evidence endpoint and is not production evidence. AWS upload requires the signed-in student, an authorized experiment, and the contract-provided presigned upload fields. Never add AWS credentials or certificate contents to a recording or support log.
+## 3. Simulation Profile — available in the package
 
-## 8. Cloud connection
+The **Simulation (Python 3.11)** profile uses the bundled Edge executable, MuJoCo engine, and SO-101 model. It does not require a source checkout, Conda, a developer toolchain, physical hardware, or an AI model download. A GPU is not required. Keep hardware output disabled.
 
-AWS IoT uses MQTT over mutual TLS on port 8883. Select externally provisioned CA, device certificate, and private-key files through the credential picker. The runtime stores references, validates the private-key permissions, subscribes to the configured command topic, and reports MQTT state separately from robot readiness. Production dispatch stays disabled unless the project owner explicitly enables it in an approved test window.
+In the Blockly workspace, inspect the assigned program and choose its local simulation action. MuJoCo executes the simulation and reports local state/telemetry. The profile is labeled simulation; it does not move a physical robot or prove that an Education API experiment was saved. Use joint controls for predictable simulation. Cartesian `checkIk` control is experimental and simulation-only because the current model frames have a measured end-effector offset.
 
-## 9. Diagnostics and support
+The packaged candidate was exercised from an extracted DEB payload on Ubuntu 26.04.1 with the real bundled MuJoCo runtime. This verifies packaged simulation behavior, but not a clean-machine package installation.
 
-Open Diagnostics for runtime health, MuJoCo availability, device ports, calibration state, safety state, MQTT state, and recent errors. Share sanitized error text and app version only. Never share passwords, tokens, certificates, private keys, or unredacted student identifiers.
+## 4. Robotics Profile — optional, operator-managed
 
-## 10. Known limitations
+The Robotics (Python 3.12) profile is **not standalone**. It requires all of the following, supplied and managed by an authorized lab operator:
 
-- Physical hardware, calibration, and stop behavior have not been accepted on a robot.
-- The optional Robotics Profile requires an operator-provided Python 3.12 environment and authorized Edge source checkout; it is not self-contained in the installers.
-- AWS mutual-TLS, production command dispatch, workers, and scoped live Twin are not verified.
-- Local WF03 is a mock contract acceptance, not server result/evidence persistence.
-- Cartesian IK remains experimental because of the URDF/MuJoCo end-effector offset.
-- Windows/macOS packaging can build in native CI, but platform installation/runtime acceptance must be performed on those operating systems.
-- checkIk source ownership and redistribution rights remain to be confirmed; the internal candidate must not be publicly distributed.
+- A compatible Python 3.12.14 environment and the dependencies in the approved Edge runtime lockfile, including LeRobot, Torch, MuJoCo, and serial support.
+- An authorized VISTA Edge source checkout containing `edge/runtime.py`.
+- For hardware discovery or control, supported and connected hardware, correct OS serial permissions, matching device/role configuration, approved calibration, commissioning, and an authorized operator. Physical motion remains unaccepted and disabled in this release candidate.
+
+The application does not install dependencies or download models. On a lab-managed development machine, prepare the environment from the approved Edge source checkout using the repository's locked runtime definition; for example:
+
+```sh
+uv python install 3.12.14
+uv sync --locked --project edge/robot-runtime --python 3.12.14
+uv pip check --python edge/robot-runtime/.venv/bin/python
+```
+
+These commands require `uv` and the authorized source checkout. They are operator setup, not student prerequisites for Simulation. In Settings, select the environment's Python executable and the Edge checkout directory. Check the displayed profile readiness and Diagnostics. A missing environment, dependency, source tree, port, or driver must remain reported as blocked/action required; it is not evidence of a connected robot. Selecting Robotics does not connect, calibrate, or arm hardware.
+
+Do not run calibration or connect a physical serial device unless the lab owner has completed the hardware commissioning checklist and explicitly authorized the session. Calibration can write motor configuration. Keep the robot's hardware emergency stop accessible during separately approved commissioning.
+
+## 5. Recording, replay, and evidence
+
+The application has a **Recordings & Evidence** area for local recording artifacts and their metadata. Recording can be inspected and replayed where a compatible artifact is available. The supported local format is `vista.robot.recording.v1`; preserve the generated manifest and trajectory together. Replay is visualization only and must never actuate a robot.
+
+The current local Blockly MuJoCo run is not wired into a command-bound recording/evidence upload flow. Desktop does not currently upload this recording format to an Education API submission. A local file or Demo status is not an Uploaded, Verified, or teacher-reviewed result. Use only the platform's approved evidence workflow when it is provided for the assigned exercise; never add credentials or student tokens to an artifact.
+
+## 6. Safe shutdown
+
+Stop the active run or recording, wait for the runtime to report stopped, then close the application normally. If the safety stop is latched, it requires an explicit reset; reset does not re-arm motion. On a Robotics session, disconnect using the app's supported device flow before closing. Do not unplug a powered robot as a substitute for stopping it.
+
+## 7. Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| App does not start | Confirm amd64 Ubuntu, install the package with APT so dependencies are resolved, and launch from a terminal to capture sanitized errors. |
+| Simulation runtime is blocked | Open Settings/Diagnostics and confirm the Simulation profile and bundled MuJoCo/model health. Reinstall the verified package if files are missing; do not install Conda or source dependencies to repair Simulation. |
+| Sign-in or assigned lab unavailable | Check network and administrator-provided Education API configuration/account. Demo mode is not a substitute for authorization. |
+| Robotics profile is blocked | Confirm the operator-selected Python 3.12 environment, locked dependencies, authorized Edge source path, and runtime diagnostics. Do not download dependencies through the app. |
+| No serial device or calibration state | Check only under operator direction. Verify OS permissions, selected role/port, approved configuration, and driver-reported calibration. No device or calibration state is inferred from simulation. |
+| Recording cannot be submitted | Local recording upload is not accepted by this Desktop integration. Preserve the local artifact and use the course's approved workflow or contact the administrator. |
+| Safety stop is active | Stop the exercise, determine the cause, then use explicit reset if authorized. A reset leaves motion unarmed. |
+
+Share only sanitized diagnostics and the application version with support. Never share passwords, access tokens, certificates, private keys, or unredacted student identifiers.
+
+## 8. Capability status
+
+- **Available:** packaged Simulation Profile with local MuJoCo and bundled SO-101 model.
+- **Optional/operator-managed:** Robotics Profile environment detection and mock/fake workflows.
+- **Hardware-dependent and not commissioned:** physical connection, calibration, and motion.
+- **Not accepted as Desktop cloud integration:** AWS MQTT dispatch, authenticated cloud Twin execution, and Desktop recording upload/submission association.
+- **Not required for Simulation:** Conda, source checkout, GPU/CUDA, or large AI model downloads.
+- **Distribution scope:** Ubuntu amd64 DEB only. Windows and macOS are Coming Soon; AppImage is not part of v0.1.0.
+
+## 9. Product description and external services
+
+VISTA Lab Station is a desktop client for assigned robotics labs, with Blockly programming and local SO-101 MuJoCo simulation. The optional Robotics Profile requires an operator-managed Python/LeRobot environment. Physical robot operation and cloud evidence require separate authorization and acceptance. The Education API and Digital Twin endpoints are operator-configured; the application does not contain credentials. Local Demo and mock tests are not cloud acceptance.
+
+For Web/AWS runtime, recording, and instructor-review requirements, use the [Education Platform Integration Handoff](FINAL_EDUCATION_PLATFORM_INTEGRATION_HANDOFF_2026-11-25.md). For exact final public checksum, compare the installed download against the actual `v0.1.0` release `SHA256SUMS` entry; do not use historical workspace candidate hashes.

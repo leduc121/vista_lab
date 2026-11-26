@@ -15,6 +15,8 @@ from edge.runtime import EdgeRuntime
 ROBOT = "f1c066c4-b5f2-45c4-b933-f034f3824dd9"
 EXPERIMENT = "4dfe1c3a-8c0a-43cc-90c5-15b977e18742"
 COMMAND = "a77433c6-0dad-48df-8b54-3a080fc33c60"
+PROGRAM_VERSION = "ad404a95-75ce-44e6-86b6-b12651fa2b22"
+RUN_ID = f"wf03-{EXPERIMENT}"
 
 
 class LocalBrokerClient:
@@ -49,7 +51,9 @@ class LocalWF03Acceptance(unittest.TestCase):
     def test_single_run_command_to_mock_evidence_contract(self):
         client = LocalBrokerClient()
         def authorize(envelope):
-            return envelope.get("payload", {}).get("runId") == EXPERIMENT and envelope.get("robotId") == ROBOT
+            return (envelope.get("payload", {}).get("runId") == RUN_ID
+                    and envelope.get("payload", {}).get("robotId") == ROBOT
+                    and envelope.get("robotId") == ROBOT)
 
         runtime = EdgeRuntime(mqtt_authorizer=authorize,
                               allow_local_mqtt_test=True,
@@ -65,10 +69,13 @@ class LocalWF03Acceptance(unittest.TestCase):
                 os.environ.pop("VISTA_IOT_ENABLED", None)
                 connected = runtime.handle({"id": "connect", "method": "mqtt_connect"})
             self.assertTrue(connected["connected"])
+            reported = [p[1]["state"]["reported"] for p in client.published if p[0].endswith("/shadow/update")]
+            self.assertTrue(reported)
+            self.assertTrue(all(entry["runtimeKind"] == "MOCK_RUNTIME" for entry in reported))
             envelope = {"schemaVersion": 1, "kind": "run", "commandId": COMMAND, "robotId": ROBOT,
-                "sequence": 1, "issuedAtMs": int(time.time() * 1000),
+                "sequence": int(time.time() * 1000), "issuedAtMs": int(time.time() * 1000),
                 "expiresAtMs": int(time.time() * 1000) + 10000,
-                "payload": {"runId": EXPERIMENT, "programVersionId": "version-local", "profile": "lesson",
+                "payload": {"runId": RUN_ID, "robotId": ROBOT, "programVersionId": PROGRAM_VERSION, "profile": "lesson",
                             "program": {"kind": "robot_program", "schemaVersion": 1,
                                         "steps": [{"type": "arm.select", "arm": "right"}, {"type": "home", "arm": "right"}]}}}
             msg = types.SimpleNamespace(topic=runtime.mqtt_transport.topics["commands"],

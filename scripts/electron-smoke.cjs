@@ -85,6 +85,8 @@ async function run() {
   }
   if (!page) throw new Error('Native Electron renderer page did not appear.');
   page.setDefaultTimeout(8000);
+  const requestedViewport = /^([1-9]\d{2,3})x([1-9]\d{2,3})$/.exec(process.env.VISTA_SMOKE_VIEWPORT || '');
+  if (requestedViewport) await page.setViewport({ width: Number(requestedViewport[1]), height: Number(requestedViewport[2]), deviceScaleFactor: 1 });
   page.on('console', (message) => { if (message.type() === 'error') errors.push(`console: ${message.text()}`); });
   page.on('pageerror', (error) => errors.push(`renderer: ${error.message}`));
 
@@ -117,6 +119,16 @@ async function run() {
   await page.evaluate(() => document.querySelector('[data-version]')?.click());
   await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('Created Demo fixture version'));
   mark('program version created through Electron IPC');
+  if (process.env.VISTA_SMOKE_RUN_LOCAL_MUJOCO === '1') {
+    await page.evaluate(() => {
+      window.confirm = () => true;
+      document.querySelector('[data-run-local]')?.click();
+    });
+    await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('MuJoCo simulated'));
+    console.log(`Electron smoke: ${await page.$eval('[data-result]', (element) => element.textContent)}`);
+    mark('local MuJoCo exercise completed; simulation only, physical motion disabled');
+    await page.screenshot({ path: path.join(artifacts, `electron-mujoco${evidenceSuffix}.png`), fullPage: false });
+  }
   await page.evaluate(() => document.querySelector('[data-run]')?.click());
   await page.waitForFunction(() => document.querySelector('[data-result]')?.textContent.includes('Demo schematic result'));
   mark('Demo schematic result rendered; no backend or physical execution');
