@@ -1,5 +1,30 @@
 # Queue 5 final Desktop acceptance — 2026-11-20
 
+## Final targeted engineering verification — 2026-11-27
+
+- Final Edge regression selection: **67 passed** across local WF03, MQTT command validation/lifecycle, runtime/adapters, shared Safety Controller, serial ownership, watchdog/teleoperation, and calibration. CHECKIK and MuJoCo model/simulation suites: **13 passed**. Physical adapters were synthetic; no serial hardware was opened.
+- Final `npm test`: **26 API/IPC checks and 19 Node tests passed**. `npm run typecheck`, `npm run build:renderer`, and `git diff --check` passed. A final synthetic owner-authorization connection regression passed after adding explicit test runtime cleanup.
+- Fixed recording memory pressure and filesystem-boundary defects found during final review: checksum/line-count verification streams 128 KiB chunks; upload reads verified metadata without parsing the full trajectory into memory. Symlinked episode directories and trajectory files are rejected; recovery skips linked directories and manifest writes use exclusive random temporary files. Replay remains the path that loads frames. Tampering is rejected and surfaced in the episode list.
+- GitHub Actions was not started: `gh auth status` reports the configured GitHub token is invalid. The requested hardware-disabled focused regression suites were run locally instead. No hardware, AWS, Production database, or credentialed Production session was accessed.
+
+## Production integration follow-up — 2026-11-27
+
+- Preserved the existing student login/refresh/password-change flow, attempt-authorized local MuJoCo execution and server-owned schematic experiment/result path. The local MuJoCo run remains separate and is never represented as Production evidence or physical execution.
+- Recording start now confirms the Education API experiment identity and carries available attempt, immutable ProgramVersion, submission, command and run identifiers into the local episode manifest. The Records view exposes these correlations.
+- Recording stop seals `trajectory.ndjson` into the local manifest with SHA-256 and byte size. Listing and viewing report checksum state; corrupt episodes remain visible as `CORRUPT`. Upload now requires a stopped, non-interrupted physical episode with a valid seal, and uses the sealed digest/size. `SIMULATION`, `MOCK_RUNTIME`, and `UNVERIFIED_RUNTIME` remain blocked from upload.
+- Focused API and recording checks passed; `npm test` passed (26 API/IPC checks and 19 Node tests); `npm run typecheck` and `npm run build:renderer` passed. These are local contract tests, not a live Production acceptance.
+- Cloud MuJoCo/Twin ingestion remains unavailable in the handed-off contract: `/internal/simulation-telemetry` is server-only, and the authenticated student experiment route accepts `schematic`, not local physics. The Web server's `vista.experiment.telemetry.v1` is produced and stored server-side; Desktop does not have a student upload route for it. Physical recording upload remains a separate PHYSICAL_ROBOT-only path and was not live-tested.
+- The R1126-1901 commissioning dataset remains the existing source of truth. Its account and fixture identifiers/credentials are not available in this Desktop workspace, so no substitute records were created and no Production login or write was attempted. Instructor compatibility is source-confirmed for server-owned schematic results and accepted backend artifacts; the local MuJoCo output is not yet compatible with instructor review.
+
+## Edge safety and readiness follow-up — 2026-11-27
+
+- Unified MQTT and local MuJoCo safety ownership: simulation commands now acquire the same `local-so101-simulation` lease as local simulation control; physical cloud commands acquire `follower-a`. A rejected competing command no longer releases another controller's lease. The WF03 test covers conflict, preserved ownership, release, and retry.
+- A Robotics profile now reports ready only when the required drivers are present and the physical `so101_follower` is connected and calibrated. Python package availability alone no longer implies device readiness.
+- Physical LeRobot connection now has a separate injected owner-authorization callback before the adapter invokes its connect operation. The default denies access. MQTT connection failures clean up their client/timer state so a later retry can proceed.
+- The Shadow's `armed` and `stopped` fields now reflect shared controller ownership, including local control. Adapter status explicitly identifies `so101_follower` and `mujoco` modes.
+- Focused checks passed: 35 Edge MQTT/runtime/WF03 Python tests and the Electron supervisor Node test. Full `edge/tests`: **94 passed**. These used fake brokers, MuJoCo and synthetic adapters; no AWS endpoint, certificate activation, serial device, calibration write, or physical motion was used.
+- Remaining contract/ownership blockers: R1 physical adapter ownership and the current CHECKIK/LeRobot handoff are external to this Desktop repository; the available `se` checkout is an older snapshot. The authoritative 2026-11-26/27 handoff files are absent. Consequently no R1 hardware dispatch, physical measured telemetry publication, or Twin-ingestion claim was added. AWS mTLS code remains opt-in and has not been activated with owner-provisioned certificates. Production deployment and physical commissioning remain unperformed.
+
 ## Edge runtime integration delta — 2026-11-27
 
 - The MQTT Device Shadow now takes `hardwareEnabled`, `stopped`, `activeRunId`, `lastCommandSequence`, `adapterMode`, `armed`, `calibrationReady`, and `fault` from the live Edge Runtime and shared safety controller. It refuses to publish a readiness report when the provider is absent or incomplete. Simulation is reported as `MOCK_RUNTIME` with hardware disabled; the physical adapter mode is `so101_follower`.

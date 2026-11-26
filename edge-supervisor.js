@@ -132,9 +132,12 @@ class EdgeSupervisor {
       if (health.version !== '0.1.0') return { state: 'BLOCKED', error: `Unsupported Edge Runtime version ${health.version}.`, health, status, restartCount: this.restarts.length };
       const driversReady = Boolean(health.drivers?.lerobot && health.drivers?.pyserial);
       const simulationReady = Boolean(health.simulation?.available);
-      const profileReady = this.runtimeProfile !== 'robotics' || Boolean(health.drivers?.lerobot);
+      const follower = status.arms?.['follower-a'];
+      const physicalFollowerReady = follower?.adapterMode === 'so101_follower'
+        && follower?.connected === true && follower?.calibrated === true;
+      const profileReady = this.runtimeProfile !== 'robotics' || (driversReady && physicalFollowerReady);
       return { state: simulationReady && profileReady ? 'READY' : 'ACTION REQUIRED', driversReady, simulationReady, profileReady,
-        runtimeProfile: this.runtimeProfile, health, status, restartCount: this.restarts.length };
+        physicalFollowerReady, runtimeProfile: this.runtimeProfile, health, status, restartCount: this.restarts.length };
     } catch (error) {
       return { state: this.child ? 'ACTION REQUIRED' : 'BLOCKED', runtimeProfile: this.runtimeProfile, error: error.message, restartCount: this.restarts.length };
     }
