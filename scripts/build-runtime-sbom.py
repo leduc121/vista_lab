@@ -24,6 +24,9 @@ def main() -> int:
         raise SystemExit("usage: build-runtime-sbom.py PIP_INSPECT_JSON OUTPUT.json PLATFORM")
     inspect_path, output_path = map(Path, sys.argv[1:3])
     platform = sys.argv[3]
+    application_version = json.loads(
+        (Path(__file__).resolve().parents[1] / "package.json").read_text(encoding="utf-8")
+    )["version"]
     inventory = json.loads(inspect_path.read_text(encoding="utf-8"))
     packages = inventory.get("installed", [])
     components = []
@@ -51,7 +54,7 @@ def main() -> int:
             "properties": [{"name": "pip.requested", "value": str(bool(item.get("requested"))).lower()}],
         })
 
-    application_ref = "pkg:generic/vista-lab-station-native-python-runtime@0.1.0"
+    application_ref = f"pkg:generic/vista-lab-station-native-python-runtime@{application_version}"
     dependencies = [{"ref": application_ref, "dependsOn": sorted(
         refs[(norm(item.get("metadata", {}).get("name", "")), item.get("metadata", {}).get("version", ""))]
         for item in packages
@@ -88,7 +91,7 @@ def main() -> int:
         "specVersion": "1.6",
         "version": 1,
         "metadata": {
-            "component": {"type": "application", "bom-ref": application_ref, "name": "VISTA Lab Station native Python build environment", "version": "0.1.0"},
+            "component": {"type": "application", "bom-ref": application_ref, "name": "VISTA Lab Station native Python build environment", "version": application_version},
             "properties": [
                 {"name": "inventory.status", "value": "resolved native pip package inventory with Requires-Dist dependency edges; includes PyInstaller build tools and can include packages not present in the frozen runtime; use the separate artifact scan for packaged contents"},
                 {"name": "inventory.platform", "value": str(platform)},
