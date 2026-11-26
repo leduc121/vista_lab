@@ -77,6 +77,47 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(physical["calibrationReady"])
         self.assertIsNone(physical["fault"])
 
+        self.runtime._mqtt_config = {"runtimeKind": "SIMULATION"}
+        self.runtime.safety.acquire("follower-a", "teleoperation", runtime_kind="SIMULATION",
+            robot_id="local-follower-a", calibrated=True, device_role="follower")
+        self.runtime.safety.set_continuous("follower-a", "teleoperation", True)
+        running = self.runtime._mqtt_shadow_state()
+        self.assertTrue(running["armed"])
+        self.assertFalse(running["stopped"])
+
+    def test_physical_lerobot_connection_requires_injected_owner_authorization(self):
+        calls = []
+        class SyntheticFollower:
+            is_connected = False
+            is_calibrated = True
+            def connect(self, calibrate=False):
+                calls.append(("connect", calibrate))
+                self.is_connected = True
+            def disconnect(self):
+                calls.append(("disconnect",))
+                self.is_connected = False
+
+        def make_adapter():
+            return LeRobotSO101Adapter("follower", "follower-a",
+                device_factory=lambda *_args: SyntheticFollower(),
+                port_provider=lambda: [{"path": "/dev/synthetic"}],
+                safe_stop=lambda _robot: "synthetic-stop")
+        denied = EdgeRuntime(physical=make_adapter())
+        request = {"id": "connect", "method": "connect", "params": {
+            "mode": "PHYSICAL ROBOT READ ONLY", "confirmed": True,
+            "role": "follower", "slot": "follower-a", "port": "/dev/synthetic", "deviceId": "fake-only"}}
+        with self.assertRaisesRegex(PermissionError, "owner authorization"):
+            denied.handle(request)
+        self.assertEqual(calls, [])
+        denied.close()
+
+        approved = EdgeRuntime(physical=make_adapter(), hardware_connect_authorizer=lambda slot: slot == "follower-a")
+        connected = approved.handle(request)
+        self.assertEqual(connected["adapterMode"], "so101_follower")
+        self.assertTrue(connected["connected"])
+        self.assertEqual(calls, [("connect", False)])
+        approved.close()
+
     def test_physical_adapter_exposes_only_gated_send_action(self):
         adapter = LeRobotSO101Adapter("follower", "follower-a")
         self.assertTrue(callable(adapter.send_action))

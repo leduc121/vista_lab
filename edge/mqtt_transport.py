@@ -126,13 +126,7 @@ class MqttTransport:
         client.will_set(f"$aws/things/{self.thing_name}/shadow/update",
                         json.dumps({"state": {"reported": self._reported(connection="offline")}}, separators=(",", ":")), qos=1, retain=False)
         client.on_connect, client.on_disconnect, client.on_message = self._on_connect, self._on_disconnect, self._on_message
-        self.client = client
-        client.connect(self.host, self.port, keepalive=30)
-        client.loop_start()
-        if not self.connected.wait(max(.1, min(timeout, 30))):
-            self.disconnect()
-            raise TimeoutError("MQTT TLS connection timed out.")
-        return self.status()
+        return self._activate_client(client, self.host, self.port, timeout)
 
     def connect_local_test(self, timeout: float = 2.0) -> dict[str, Any]:
         """Connect an injected local broker fake; this path cannot contact AWS."""
@@ -146,13 +140,35 @@ class MqttTransport:
         client.will_set(f"$aws/things/{self.thing_name}/shadow/update",
                         json.dumps({"state": {"reported": self._reported(connection="offline")}}, separators=(",", ":")), qos=1, retain=False)
         client.on_connect, client.on_disconnect, client.on_message = self._on_connect, self._on_disconnect, self._on_message
+        return self._activate_client(client, "127.0.0.1", 1883, timeout, max_timeout=10,
+                                     timeout_message="Local mock MQTT connection timed out.")
+
+    def _activate_client(self, client: Any, host: str, port: int, timeout: float, *,
+                         max_timeout: float = 30, timeout_message: str = "MQTT TLS connection timed out.") -> dict[str, Any]:
         self.client = client
-        client.connect("127.0.0.1", 1883, keepalive=30)
-        client.loop_start()
-        if not self.connected.wait(max(.1, min(timeout, 10))):
-            self.disconnect()
-            raise TimeoutError("Local mock MQTT connection timed out.")
-        return self.status()
+        loop_started = False
+        try:
+            client.connect(host, port, keepalive=30)
+            client.loop_start()
+            loop_started = True
+            if not self.connected.wait(max(.1, min(timeout, max_timeout))):
+                raise TimeoutError(timeout_message)
+            return self.status()
+        except Exception:
+            self.connected.clear()
+            self._cancel_heartbeat()
+            if self.client is client:
+                self.client = None
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+            if loop_started:
+                try:
+                    client.loop_stop()
+                except Exception:
+                    pass
+            raise
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         code = int(getattr(reason_code, "value", reason_code))
@@ -188,6 +204,7 @@ class MqttTransport:
     def _on_message(self, client, userdata, message):
         command_id, sequence = "", 0
         resource = None
+        lease_acquired = False
         try:
             if message.topic != self.topics["commands"]: raise ValueError("command_identity_invalid")
             if len(message.payload) > MAX_MESSAGE_BYTES: raise ValueError("command_payload_invalid")
@@ -227,15 +244,19 @@ class MqttTransport:
             if not self.authorize(envelope): raise ValueError("runtime_rejected")
             if not self.safety_ready(): raise ValueError("runtime_not_ready")
             if self.runtime_kind == "PHYSICAL_ROBOT" and not self.safety_controller.mqtt_ready(): raise ValueError("hardware_not_commissioned")
-            resource = f"mqtt:{self.robot_id}"
+            # The safety lease uses the same resource key as every other
+            # controller of this physical or simulated follower.
+            resource = "follower-a" if self.runtime_kind == "PHYSICAL_ROBOT" else "local-so101-simulation"
             self.safety_controller.acquire(resource, "MQTT", runtime_kind=self.runtime_kind,
                                            robot_id=self.robot_id, calibrated=True,
                                            hardware_authorized=self.runtime_kind == "PHYSICAL_ROBOT", device_role="follower")
+            lease_acquired = True
             with self.lock:
                 prior = self.seen.get(command_id)
                 if prior is not None:
                     if prior: self._publish_events(prior)
                     self.safety_controller.release(resource, reason="duplicate_command")
+                    lease_acquired = False
                     if not prior: self._reject(command_id, sequence, "command_replayed")
                     return
                 if any(e.get("robotId") == self.robot_id and e.get("sequence", 0) >= sequence for events in self.seen.values() for e in events): raise ValueError("command_replayed")
@@ -264,13 +285,14 @@ class MqttTransport:
                 terminal, code = "failed", str(error)[:80] or "runtime_rejected"
             finally:
                 self.safety_controller.release(resource, reason="command_finished")
+                lease_acquired = False
             finished = int(time.time() * 1000)
             events.append(self._event(command_id, "status", terminal, sequence + 2, finished, code))
             self.seen[command_id] = events
             self.seen_started[command_id] = finished
             self._persist_seen(); self._publish_events([events[-1]])
         except Exception as error:
-            if resource is not None and self.safety_controller is not None:
+            if lease_acquired and resource is not None and self.safety_controller is not None:
                 try: self.safety_controller.release(resource, reason="command_rejected")
                 except Exception: pass
             self.last_error = str(error)[:300]

@@ -80,9 +80,16 @@ class LocalWF03Acceptance(unittest.TestCase):
                                         "steps": [{"type": "arm.select", "arm": "right"}, {"type": "home", "arm": "right"}]}}}
             msg = types.SimpleNamespace(topic=runtime.mqtt_transport.topics["commands"],
                                          payload=json.dumps(envelope).encode(), retain=False)
+            runtime.safety.acquire("local-so101-simulation", "blockly", runtime_kind="SIMULATION",
+                robot_id="local-so101-simulation", calibrated=True, device_role="follower")
+            client.on_message(client, None, msg)
+            self.assertEqual(runtime.safety.status()["owners"]["local-so101-simulation"]["source"], "blockly")
+            rejected = [p[1] for p in client.published if p[1].get("commandId") == COMMAND]
+            self.assertEqual((rejected[-1]["status"], rejected[-1]["code"]), ("rejected", "execution_owned_by_another_source"))
+            runtime.safety.release("local-so101-simulation", reason="test_complete")
             client.on_message(client, None, msg)
             lifecycle = [p[1] for p in client.published if p[1].get("commandId") == COMMAND]
-            self.assertEqual([e["status"] for e in lifecycle], ["accepted", "executing", "completed"])
+            self.assertEqual([e["status"] for e in lifecycle], ["rejected", "accepted", "executing", "completed"])
             self.assertTrue(all(e["robotId"] == ROBOT for e in lifecycle))
             self.assertEqual(runtime.safety.status()["owners"], {})
             telemetry = [p[1] for p in client.published if p[0] == runtime.mqtt_transport.topics["telemetry"]]

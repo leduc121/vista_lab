@@ -33,3 +33,21 @@ test('packaged runtime missing is a closed diagnostic state', async () => {
   assert.match(result.error, /missing/i);
   await supervisor.stop();
 });
+
+test('robotics profile is not ready until the physical follower is connected and calibrated', async () => {
+  const supervisor = new EdgeSupervisor({ app: { isPackaged: false }, runtimeProfile: 'robotics' });
+  supervisor.request = async (method) => method === 'health'
+    ? { version: '0.1.0', drivers: { lerobot: true, pyserial: true }, simulation: { available: true } }
+    : { arms: { 'follower-a': { adapterMode: 'so101_follower', connected: false, calibrated: false } } };
+  const disconnected = await supervisor.diagnostics();
+  assert.equal(disconnected.state, 'ACTION REQUIRED');
+  assert.equal(disconnected.profileReady, false);
+  assert.equal(disconnected.physicalFollowerReady, false);
+
+  supervisor.request = async (method) => method === 'health'
+    ? { version: '0.1.0', drivers: { lerobot: true, pyserial: true }, simulation: { available: true } }
+    : { arms: { 'follower-a': { adapterMode: 'so101_follower', connected: true, calibrated: true } } };
+  const connected = await supervisor.diagnostics();
+  assert.equal(connected.profileReady, true);
+  assert.equal(connected.physicalFollowerReady, true);
+});

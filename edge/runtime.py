@@ -79,7 +79,8 @@ class SimulatedSO101:
         self.joints.update(shoulder_lift=-35.0, elbow_flex=70.0, wrist_flex=-35.0, gripper=50.0)
 
     def status(self) -> dict[str, Any]:
-        return {"mode": self.mode, "connected": self.connected, "calibrated": False, "motionEnabled": False}
+        return {"mode": self.mode, "adapterMode": "mujoco", "connected": self.connected,
+                "calibrated": False, "motionEnabled": False}
 
     def ports(self) -> list[dict[str, Any]]:
         return []
@@ -150,6 +151,7 @@ class LeRobotSO101Adapter:
             connected = False
         return {
             "mode": self.mode,
+            "adapterMode": "so101_follower" if self.role == "follower" else "so101_leader",
             "connected": connected,
             "state": "ERROR" if self.last_error else "CALIBRATED" if connected and self.calibration_ready else "UNCALIBRATED" if connected else "DISCONNECTED",
             "calibrated": self.calibration_ready,
@@ -301,7 +303,7 @@ class EdgeRuntime:
                  leader: Adapter | None = None, arms: dict[str, Adapter] | None = None,
                  mqtt_transport_factory: Any = MqttTransport,
                  mqtt_authorizer: Any = None, mqtt_command_executor: Any = None,
-                 hardware_authorizer: Any = None,
+                 hardware_authorizer: Any = None, hardware_connect_authorizer: Any = None,
                  allow_local_mqtt_test: bool = False) -> None:
         self.simulated = simulated or SimulatedSO101()
         self.arms: dict[str, LeRobotSO101Adapter | Adapter] = {
@@ -333,6 +335,7 @@ class EdgeRuntime:
         self._mujoco_safety_sequence = 0
         self._hardware_sequences: dict[str, int] = {}
         self._hardware_authorizer = hardware_authorizer or (lambda _slot: False)
+        self._hardware_connect_authorizer = hardware_connect_authorizer or (lambda _slot: False)
         self._physical_teleop: dict[str, dict[str, Any]] = {}
         self._mqtt_factory = mqtt_transport_factory
         self._mqtt_authorizer = mqtt_authorizer or (lambda _envelope: False)
@@ -375,13 +378,15 @@ class EdgeRuntime:
         physical = self.arms["follower-a"].status()
         physical_mode = self._mqtt_config is not None and self._mqtt_config.get("runtimeKind") == "PHYSICAL_ROBOT"
         runtime_fault = safety.get("fault") or physical.get("error")
+        owners = safety.get("owners") if isinstance(safety.get("owners"), dict) else {}
+        executing = any(isinstance(owner, dict) and owner.get("state") == "EXECUTING" for owner in owners.values())
         return {
             "hardwareEnabled": bool(safety.get("hardwareEnabled")) if physical_mode else False,
-            "stopped": self._mqtt_active_run_id is None,
+            "stopped": self._mqtt_active_run_id is None and not executing,
             "activeRunId": self._mqtt_active_run_id,
             "lastCommandSequence": self._mqtt_last_command_sequence,
-            "adapterMode": "so101_follower" if physical_mode else "mujoco",
-            "armed": safety.get("state") in {"ARMED", "EXECUTING"} and safety.get("activeControlSource") == "MQTT",
+            "adapterMode": physical.get("adapterMode", "so101_follower") if physical_mode else "mujoco",
+            "armed": safety.get("state") in {"ARMED", "EXECUTING"},
             "calibrationReady": (bool(physical.get("calibrated")) and bool(safety.get("physicalCalibrationReady")))
                 if physical_mode else bool(safety.get("calibrationReady")),
             "fault": runtime_fault,
@@ -429,7 +434,7 @@ class EdgeRuntime:
         """Execute the existing MQTT lesson allowlist on MuJoCo under its MQTT lease."""
         payload = envelope["payload"]
         run_id = payload["runId"]
-        resource = f"mqtt:{envelope['robotId']}"
+        resource = "local-so101-simulation"
         runtime_kind = self._mqtt_config["runtimeKind"]
         frames: list[dict[str, Any]] = []
         self.mujoco.action_guard = self._mujoco_action_guard(
@@ -818,6 +823,8 @@ class EdgeRuntime:
             if any(other.status().get("connected") and other.status().get("port") == selected_port
                    for other_slot, other in self.arms.items() if other_slot != slot):
                 raise ValueError("A serial port can be owned by only one robot arm at a time.")
+            if isinstance(adapter, LeRobotSO101Adapter) and self._hardware_connect_authorizer(slot) is not True:
+                raise PermissionError("Physical LeRobot connection requires separate hardware owner authorization.")
             status = adapter.connect(selected_port, params.get("deviceId"))
             status["slot"] = slot
             self.active = "PHYSICAL ROBOT READ ONLY"

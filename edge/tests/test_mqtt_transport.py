@@ -63,6 +63,7 @@ class MqttTests(unittest.TestCase):
         envelope=self.envelope(); msg=types.SimpleNamespace(topic=self.transport.topics["commands"],payload=json.dumps(envelope).encode(),retain=False)
         self.transport._on_message(c,None,msg)
         self.assertEqual(self.called,["run-1"])
+        self.assertEqual(self.safety.acquired[0][0], "follower-a")
         self.assertEqual(self.safety.acquired[0][1],"MQTT")
         self.assertEqual(len(self.safety.released),1)
         events=[p[1] for p in c.published if p[1].get("commandId")==CMD]
@@ -115,6 +116,21 @@ class MqttTests(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError,"LocalSafetyController"):
                 self.transport.connect()
         with self.assertRaises(ValueError): MqttTransport(host="a",thing_name=THING,robot_id=THING,ca_file="",cert_file="",key_file="",authorize=lambda _:True,safety_ready=lambda:True,on_command=lambda _:None,dedupe_path="x")
+
+    @unittest.skipIf(os.name=="nt","Windows key ACL validation is fail closed")
+    def test_failed_network_connect_cleans_client_and_allows_retry(self):
+        class FailedClient(FakeClient):
+            def connect(self, *_args, **_kwargs):
+                raise OSError("synthetic connection failure")
+        self.transport.client_factory = FailedClient
+        with patch.dict("sys.modules", self.modules), patch.dict(os.environ, {"VISTA_IOT_ENABLED": "true"}):
+            with self.assertRaisesRegex(OSError, "synthetic connection failure"):
+                self.transport.connect()
+        self.assertIsNone(self.transport.client)
+        self.assertFalse(self.transport.connected.is_set())
+        self.transport.client_factory = FakeClient
+        self.connect()
+        self.assertTrue(self.transport.connected.is_set())
 
     def test_heartbeat_cannot_exceed_backend_freshness_interval(self):
         self.assertEqual(self.transport.heartbeat_interval, 10.0)
