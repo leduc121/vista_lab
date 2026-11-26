@@ -341,6 +341,8 @@ class EdgeRuntime:
         self.mqtt_transport = None
         self._mqtt_config: dict[str, Any] | None = None
         self._mqtt_last_execution: dict[str, Any] | None = None
+        self._mqtt_active_run_id: str | None = None
+        self._mqtt_last_command_sequence = 0
 
     def initialize_mqtt(self, config: dict[str, Any]) -> dict[str, Any]:
         allowed = {"host", "thingName", "robotId", "caFile", "certFile", "keyFile", "dedupePath", "port", "topicPrefix", "runtimeKind"}
@@ -364,8 +366,26 @@ class EdgeRuntime:
             safety_controller=self.safety, dedupe_path=config["dedupePath"],
             port=config.get("port", 8883), topic_prefix=config.get("topicPrefix", "vista/demo/robots"),
             runtime_kind=runtime_kind, allow_local_test=self._allow_local_mqtt_test,
+            shadow_state=self._mqtt_shadow_state,
         )
         return self.mqtt_status()
+
+    def _mqtt_shadow_state(self) -> dict[str, Any]:
+        safety = self.safety.status()
+        physical = self.arms["follower-a"].status()
+        physical_mode = self._mqtt_config is not None and self._mqtt_config.get("runtimeKind") == "PHYSICAL_ROBOT"
+        runtime_fault = safety.get("fault") or physical.get("error")
+        return {
+            "hardwareEnabled": bool(safety.get("hardwareEnabled")) if physical_mode else False,
+            "stopped": self._mqtt_active_run_id is None,
+            "activeRunId": self._mqtt_active_run_id,
+            "lastCommandSequence": self._mqtt_last_command_sequence,
+            "adapterMode": "so101_follower" if physical_mode else "mujoco",
+            "armed": safety.get("state") in {"ARMED", "EXECUTING"} and safety.get("activeControlSource") == "MQTT",
+            "calibrationReady": (bool(physical.get("calibrated")) and bool(safety.get("physicalCalibrationReady")))
+                if physical_mode else bool(safety.get("calibrationReady")),
+            "fault": runtime_fault,
+        }
 
     def connect_mqtt(self) -> dict[str, Any]:
         if self.mqtt_transport is None:
@@ -387,14 +407,23 @@ class EdgeRuntime:
                 "lastExecution": self._mqtt_last_execution}
 
     def _execute_mqtt_envelope(self, envelope: dict[str, Any]) -> Any:
-        if self._mqtt_executor is not None:
-            result = self._mqtt_executor(envelope, self)
-        else:
-            if not self._allow_local_mqtt_test or self._mqtt_config.get("runtimeKind") != "SIMULATION":
-                raise PermissionError("Physical MQTT command execution is not commissioned in this runtime.")
-            result = self._execute_mqtt_simulation(envelope)
-        self._mqtt_last_execution = {"commandId": envelope.get("commandId"), "result": result}
-        return result
+        self._mqtt_active_run_id = envelope.get("payload", {}).get("runId")
+        self._mqtt_last_command_sequence = envelope.get("sequence", self._mqtt_last_command_sequence)
+        if self.mqtt_transport is not None:
+            self.mqtt_transport.publish_shadow_state()
+        try:
+            if self._mqtt_executor is not None:
+                result = self._mqtt_executor(envelope, self)
+            else:
+                if not self._allow_local_mqtt_test or self._mqtt_config.get("runtimeKind") != "SIMULATION":
+                    raise PermissionError("Physical MQTT command execution is not commissioned in this runtime.")
+                result = self._execute_mqtt_simulation(envelope)
+            self._mqtt_last_execution = {"commandId": envelope.get("commandId"), "result": result}
+            return result
+        finally:
+            self._mqtt_active_run_id = None
+            if self.mqtt_transport is not None:
+                self.mqtt_transport.publish_shadow_state()
 
     def _execute_mqtt_simulation(self, envelope: dict[str, Any]) -> dict[str, Any]:
         """Execute the existing MQTT lesson allowlist on MuJoCo under its MQTT lease."""

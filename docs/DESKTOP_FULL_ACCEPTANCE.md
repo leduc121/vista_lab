@@ -1,8 +1,23 @@
 # VISTA Lab Station — Desktop Completion Acceptance
 
-**Assessment:** 2026-11-23
+**Assessment:** 2026-11-25 (updated with student-lab acceptance)
 **Scope:** Desktop repository only. No Web repository files were modified.
-**Decision:** **GO for simulation-ready Desktop candidate; NO-GO for physical robot deployment or public release.**
+**Decision:** **Simulation UI and bundled runtime PASS on the exact Ubuntu DEB candidate in Demo/test-fixture scope. Full student-lab acceptance remains PARTIAL because local simulation recording/evidence is not implemented and real student API persistence was not exercised. Physical robot deployment remains NO-GO.**
+
+The focused first-run journey and current capability classifications are in
+[Student Lab Product Acceptance](desktop/STUDENT_LAB_ACCEPTANCE_2026-11-25.md).
+The final robotics contract results, packaged gripper-limit fix and remaining
+evidence gaps are in
+[Final Robotics Lab Acceptance](desktop/ROBOTICS_LAB_FINAL_ACCEPTANCE_2026-11-25.md).
+The existing DEB candidate was verified by its owner-provided checksum and
+launched from an extracted payload without rebuilding; its bundled MuJoCo
+runtime completed Blockly exercises and returned simulation telemetry with
+physical output disabled. The later strict five-step check found a simulated
+gripper limit overrun in that original package. A five-step run also exposed a small gripper telemetry
+limit overshoot. A local rebuilt candidate at `dist/phase6-candidate/` fixes
+the simulated gripper target margin and passes the five-step packaged runtime
+check. The supplied owner DEB remains untouched and retains the old defect;
+the rebuilt candidate was not published.
 
 ## Acceptance matrix
 

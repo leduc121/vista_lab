@@ -1,5 +1,7 @@
 # Lab Station backend handoff
 
+**Final Desktop update (2026-11-25):** this document's server-only telemetry boundary remains in force. The latest available Web handoff does not provide a Desktop-authenticated route for local MuJoCo frames or `vista.robot.recording.v1` upload. See [Final Education Platform Integration Handoff](FINAL_EDUCATION_PLATFORM_INTEGRATION_HANDOFF_2026-11-25.md) for source snapshot caveats, exact Web/Edge MQTT payload alignment, local acceptance evidence, and the remaining Claude-owned WF03/WF04 work.
+
 ## Device provisioning integration (backend commit 9b6dab0)
 
 Source and `docs/acceptance/DEVICE_PROVISIONING_CONTRACT.md` were inspected.

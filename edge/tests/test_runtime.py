@@ -60,6 +60,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(status["motionEnabled"])
         self.assertEqual(set(status["arms"]), {"leader-a", "follower-a", "leader-b", "follower-b"})
 
+    def test_mqtt_shadow_state_is_derived_from_safety_and_selected_runtime(self):
+        self.runtime._mqtt_config = {"runtimeKind": "SIMULATION"}
+        simulation = self.runtime._mqtt_shadow_state()
+        self.assertEqual(simulation["adapterMode"], "mujoco")
+        self.assertFalse(simulation["hardwareEnabled"])
+        self.assertFalse(simulation["armed"])
+        self.assertTrue(simulation["calibrationReady"])
+        self.assertTrue(simulation["stopped"])
+        self.assertIsNone(simulation["activeRunId"])
+
+        self.runtime._mqtt_config = {"runtimeKind": "PHYSICAL_ROBOT"}
+        physical = self.runtime._mqtt_shadow_state()
+        self.assertEqual(physical["adapterMode"], "so101_follower")
+        self.assertFalse(physical["hardwareEnabled"])
+        self.assertFalse(physical["calibrationReady"])
+        self.assertIsNone(physical["fault"])
+
     def test_physical_adapter_exposes_only_gated_send_action(self):
         adapter = LeRobotSO101Adapter("follower", "follower-a")
         self.assertTrue(callable(adapter.send_action))

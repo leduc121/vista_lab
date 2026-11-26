@@ -1,5 +1,7 @@
 # Ubuntu v0.1.0 third-party reconciliation
 
+**Freeze status (2026-11-25):** this reconciliation remains valid only for the original Draft asset SHA-256 `a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4`. The separate corrected workspace candidate (`8eb5d74c23a3be4d2164f7e58bbbb0938467240cead40eabc328e846a29309b4`) has not had a new binary SBOM or package-tree/license-archive reconciliation generated. Do not attach this old artifact-specific SBOM/archive to the corrected candidate. Keep all existing `NOASSERTION` values; no license is inferred by this note.
+
 Status: artifact-scoped reconciliation for the existing Ubuntu amd64 Draft Release. This document covers the DEB identified below; it does not represent legal advice or infer licenses from names.
 
 ## Artifact and provenance

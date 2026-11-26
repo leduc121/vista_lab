@@ -1,5 +1,7 @@
 # Backend handoff: Desktop integration acceptance
 
+> **Status refresh — 2026-11-25:** The dated notes below contain historical blockers, some now superseded by the read-only Web source snapshot. The available `se-sprint-90` source documents attempt-scope revocation as implemented and documents local Web WF03/WF04 evidence flows. It is still 81 commits behind its `origin/main` ref and has unrelated dirty files, so this is not a statement about the latest remote or deployed service. The Desktop-specific evidence gap remains: no supported route accepts Desktop `vista.robot.recording.v1` episodes and binds them to a student's submitted attempt. See [Final Education Platform Integration Handoff](FINAL_EDUCATION_PLATFORM_INTEGRATION_HANDOFF_2026-11-25.md) for the verified MQTT payload comparison, tests, AWS gates, and exact Claude actions.
+
 Reviewed read-only against the backend `docs/acceptance/DESKTOP_API_CONTRACTS.md` and the corresponding Education API/Twin source on 2026-11-19. The Desktop now targets the contracts below. This is source verification, not a claim of live or Production acceptance.
 
 ## Contracts the Desktop consumes
