@@ -551,11 +551,11 @@ recommendation.
   SHA/build command provenance, an 18-component runtime Python CycloneDX SBOM,
   and a validated third-party license/notice archive with 568 collected files.
   No v0.1.0 files are in this checkpoint. It is not a published release.
-- **BLOCKED — remote review and CI:** GitHub CLI reports its configured token
-  is invalid, and DNS cannot resolve `github.com` for the branch remote. The
-  local commit is ready, but this environment could not push it, open/update the
-  integration PR, or inspect GitHub Actions results. Reauthenticate GitHub and
-  push `codex/fix-ubuntu-draft-assembly` to complete those remote steps.
+- **BLOCKED — PR discovery and CI:** the feature branch and commits were pushed
+  successfully. GitHub CLI reports its configured token is invalid and cannot
+  connect to `api.github.com`; no browser session is available here. I could not
+  discover or create/update the integration PR, or inspect GitHub Actions
+  results. Restore GitHub API access to complete and verify those remote steps.
 - No Windows/macOS package was built. No protected branch was merged and no
   public release was created.
 
