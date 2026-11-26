@@ -6,6 +6,18 @@ The owner reports that Ubuntu amd64 `0.1.0` has already been publicly released. 
 
 The final PR's Ubuntu Actions artifact must be checked against its exact source SHA before it can become the next release candidate. Verify DEB metadata, runtime dependencies, launcher, startup, SHA-256, provenance and third-party notices from that artifact. Do not invoke the legacy `desktop-release-draft.yml`: it is pinned to `0.1.0`. Keep Windows/macOS outside this release scope. See [Final Acceptance Evidence](docs/desktop/FINAL_ACCEPTANCE_EVIDENCE.md) and [AWS Acceptance Runbook](docs/desktop/AWS_ACCEPTANCE_RUNBOOK.md) for the current integrated acceptance boundaries.
 
+The completed branch is pushed as `codex/final-overnight-completion`, final implementation commit `6bc4bc77fe08141b7f5f22df900c7092d78ffc0d`. The workspace cannot create a PR or inspect Actions because its GitHub CLI token is invalid and no authenticated browser session is available. The exact compare/create URL is [main…final-overnight-completion](https://github.com/leduc121/vista_lab/compare/main...codex/final-overnight-completion?expand=1). Once the owner opens that PR, the existing native acceptance workflow will run from the PR head; download and verify only its Ubuntu artifact before replacing this package checkpoint.
+
+Reproducible Ubuntu build command for the final PR head (not run locally because the established pipeline assigns native packaging to GitHub Actions):
+
+```bash
+VISTA_EDGE_PYTHON=edge/.venv/bin/python npm run build:edge-runtime
+npx electron-builder --linux deb --x64 --publish never
+npm run release:checksums
+```
+
+The CI provenance must identify the exact PR head SHA, Actions run URL, Ubuntu runner, architecture `amd64`, `0.1.1` package metadata, artifact checksums, SBOM and license archive. Do not publish the result as a Release in this checkpoint.
+
 The released `0.1.0` asset's bytes and published checksum are **not independently re-fetched in this workspace**. Keep the prior “owner-reported” qualification below; do not use historical workspace candidate hashes as the published checksum.
 
 **Release state:** The owner reports Ubuntu amd64 v0.1.0 completed its approved release process. This workspace cannot independently fetch the current Release or asset, so its published checksum, size, tag target, and owner-tested revision are **not verified here**. Canonical owner-designated URLs are the [v0.1.0 Release](https://github.com/leduc121/vista_lab/releases/tag/v0.1.0) and [Ubuntu DEB](https://github.com/leduc121/vista_lab/releases/download/v0.1.0/VISTA.Lab.Station-0.1.0-amd64.deb). Do not use a historical workspace candidate hash as the published checksum.
