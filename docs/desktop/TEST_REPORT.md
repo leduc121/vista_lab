@@ -528,6 +528,37 @@ recommendation.
 - No Production/AWS, shared Supabase, MQTT, physical hardware, merge or
   publication was used.
 
+## Integration release verification — 2026-11-27
+
+- **PASS — local regression suites:** `npm test` (26 API/IPC checks and 19
+  Node runtime tests), `edge/.venv/bin/python -m unittest discover -s
+  edge/tests -v` (94 tests), `npm run typecheck`, and
+  `npm run build:renderer`.
+- **PASS — Ubuntu amd64 package:** built `0.1.1` from source commit
+  `13fd11fa031168ed1d237784293c00b35d5794ca` with the native Python 3.11 /
+  PyInstaller and electron-builder Linux DEB pipeline. The package metadata
+  reports `vista-lab-station`, version `0.1.1`, architecture `amd64`; runtime
+  dependencies are the nine GTK, NSS, XSS, XTest, XDG, AT-SPI, UUID, and Secret
+  Service libraries encoded in the DEB control metadata.
+- **PASS — package launch and integrity:** the packaged desktop entry points to
+  `/opt/VISTA Lab Station/vista-lab-station`; packaged Electron startup and the
+  Demo login, Blockly save/version, and runtime-profile flow passed under Xvfb.
+  `ldd` found no missing shared libraries in the launcher or Edge Runtime. The
+  DEB SHA-256 is
+  `402aeca230f4362f0f1e2f2336b606c340cee776478a94595fdf1f4c8a2a7e42`.
+- **PASS — build evidence:** the ignored local checkpoint at
+  `dist/ubuntu-0.1.1-checkpoint/` contains the DEB, SHA-256 manifest, full source
+  SHA/build command provenance, an 18-component runtime Python CycloneDX SBOM,
+  and a validated third-party license/notice archive with 568 collected files.
+  No v0.1.0 files are in this checkpoint. It is not a published release.
+- **BLOCKED — remote review and CI:** GitHub CLI reports its configured token
+  is invalid, and DNS cannot resolve `github.com` for the branch remote. The
+  local commit is ready, but this environment could not push it, open/update the
+  integration PR, or inspect GitHub Actions results. Reauthenticate GitHub and
+  push `codex/fix-ubuntu-draft-assembly` to complete those remote steps.
+- No Windows/macOS package was built. No protected branch was merged and no
+  public release was created.
+
 ## Final Robotics Lab acceptance — 2026-11-25
 
 See [Final Robotics Lab Acceptance](ROBOTICS_LAB_FINAL_ACCEPTANCE_2026-11-25.md)
