@@ -1,5 +1,13 @@
 # VISTA Lab Station — Release Readiness
 
+## Current distribution disposition — 2026-11-27
+
+PR #7 was merged by the repository owner as `4906fee4e455c37b8e044d3c7444f378b4a0021f`; final source `e51a908e73a1c176396ad87b6696ca05af8406ed` passed native run 45882596490. Documentation reconciliation is in open PR #8, head `1e3b2162876a7ba3ce461a52c496049fc1e9069f`, whose three native jobs passed run 45916146065.
+
+**Focused package build succeeded:** existing `.github/workflows/desktop-release-draft.yml` ran Ubuntu-only workflow 45916626947 for source `e51a908e73a1c176396ad87b6696ca05af8406ed`, with `create_draft=false`. It generated isolated artifact `vista-desktop-ubuntu-x64`, ID `15162896520`, 133,172,802 bytes, archive digest `sha256:7a1fbfa716c01e6c0f53d4c51879eda16601865409afdac23ed9f4d208a276bf`. The artifact archive download stalled without transferring bytes. Only the archive digest is known; the inner DEB hash, metadata, launcher/startup, SBOM and license payload are not verified. The source package version is 0.1.1; do not treat the artifact as verified, publish it, or use it for commissioning until its contents are retrieved and inspected.
+
+The final packaged Simulation child is bundled from this Desktop source's `edge/runtime.py`; the optional Robotics profile instead needs the operator's selected Python 3.12 environment and Edge source checkout. It does not use the separate SKYNET-Thesis/se R1 service. That service remains a distinct Cloud blocker; see [Final Acceptance Evidence](FINAL_ACCEPTANCE_EVIDENCE.md) and [AWS Acceptance Runbook](AWS_ACCEPTANCE_RUNBOOK.md). No locally verified package is ready for physical commissioning.
+
 **Assessment date:** 2026-11-23
 **Simulation-ready Desktop candidate:** **GO**
 **Physical robot deployment:** **NO-GO**

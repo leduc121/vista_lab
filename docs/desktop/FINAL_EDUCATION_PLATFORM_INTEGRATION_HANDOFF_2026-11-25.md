@@ -3,6 +3,10 @@
 **Date:** 2026-11-26  
 **Scope:** Desktop repository changes plus read-only source/network inspection. No files in `se`, Web, Backend, or AWS were changed. One public, unauthenticated Production capability GET was made; no student data, authenticated Production route, AWS resource, or physical device was accessed.
 
+## Runtime ownership addendum — 2026-11-27
+
+The final Desktop supervisor's child is `edge/runtime.py` in source mode or its PyInstaller binary in packaged Simulation mode. Robotics mode uses the explicitly selected Python/source pair. The local configuration checked in this pass has the default Simulation profile and no Robotics override. The separate R1 implementation is `/home/quangduc/Code/vista/se-final-rc/services/robot-runtime`, exposed as port 8015 in local Compose; the Desktop application does not launch it. The inspected API deploy script does not deploy that R1 service, and the actual Edge host source/install/command remains unknown. Thus the Desktop MuJoCo telemetry and local Shadow code do not correct the R1 source or establish Cloud acceptance. The checked R1 source also has no SO-101 physical adapter or physical measured telemetry. See the current [AWS Acceptance Runbook](AWS_ACCEPTANCE_RUNBOOK.md) and [Final Acceptance Evidence](FINAL_ACCEPTANCE_EVIDENCE.md) for the exact owner checkpoint and focused artifact procedure.
+
 ## Decision
 
 **Desktop local WF03 contract: PASS with mock services and simulated execution only. Education Platform/WF03 integration: PARTIAL. Desktop has a student-authenticated recording upload path for stopped `PHYSICAL_ROBOT` episodes; it deliberately rejects `SIMULATION`, `MOCK_RUNTIME`, and unverified episodes. The Desktop MuJoCo-to-submission evidence journey remains BLOCKED. WF04 for a Desktop MuJoCo run: BLOCKED. AWS E2E: BLOCKED / NOT RUN. Physical acceptance: BLOCKED / NOT RUN.**

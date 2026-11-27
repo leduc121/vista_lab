@@ -2,6 +2,10 @@
 
 Prepared 2026-11-20 for Claude. **No Web LMS code or hosting configuration was changed.** The complete local staging tree is `releases/v0.1.0/`. It can later be copied as a directory below an approved static `/downloads/` root. Do not publish it yet: `releaseStatus` is `release-candidate-not-publicly-approved`, the artifacts are unsigned, Windows runtime acceptance is pending, and SO-101 asset redistribution rights are unresolved.
 
+## Current Desktop release handoff — 2026-11-27
+
+This file's `v0.1.0` staging details are historical. PR #7 merged as `4906fee`; PR #8 contains the docs reconciliation and is open with CI green. Ubuntu-only workflow 45916626947 successfully built from `e51a908e73a1c176396ad87b6696ca05af8406ed` and uploaded private artifact `vista-desktop-ubuntu-x64` (ID `15162896520`, 133,172,802-byte archive, digest `sha256:7a1fbfa716c01e6c0f53d4c51879eda16601865409afdac23ed9f4d208a276bf`). The archive download stalled before transferring bytes; the inner DEB SHA, metadata, launcher/startup, SBOM and notice contents are not verified. Do not use the stale local `0.1.1` build, publish, or overwrite `v0.1.0`. Retrieve and verify the existing private artifact before distribution; see [Release Readiness](RELEASE_READINESS.md). Keep Windows/macOS marked Coming Soon.
+
 **Sprint update:** the staged `v0.1.0` files are the prior build and do not include the Python Edge Runtime or setup wizard. Their checksums do not cover the current source. A new private stage must wait for successful native runtime builds and refreshed installers.
 
 Queue 5 refreshed the private candidate after a Linux token-persistence security fix. The current `manifest.json`, `SHA256SUMS`, installer script pins, and three files now match; `node scripts/validate-download-release.cjs` and all three SHA-256 checks pass. Use only the current staging manifest, not historical Queue 3 hashes. See `TEST_REPORT.md` and `RELEASE_CHECKLIST.md` for remaining live API, Windows, asset-rights, and approval gates. No public download URL has been selected.
