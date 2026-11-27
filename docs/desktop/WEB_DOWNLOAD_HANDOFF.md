@@ -2,6 +2,10 @@
 
 Prepared 2026-11-20 for Claude. **No Web LMS code or hosting configuration was changed.** The complete local staging tree is `releases/v0.1.0/`. It can later be copied as a directory below an approved static `/downloads/` root. Do not publish it yet: `releaseStatus` is `release-candidate-not-publicly-approved`, the artifacts are unsigned, Windows runtime acceptance is pending, and SO-101 asset redistribution rights are unresolved.
 
+## Current Desktop release handoff — 2026-11-27
+
+This file's `v0.1.0` staging details are historical. Current integration candidate: PR #7, source `e51a908e73a1c176396ad87b6696ca05af8406ed`, CI green. No final DEB from that source has been retrieved or verified, and no public release is authorized. Do not copy the `v0.1.0` staging tree or the stale local `0.1.1` DEB as the new release. After authorized merge, use the Ubuntu-only `desktop-release-draft.yml` workflow with the exact source SHA and `create_draft=false`, then verify the isolated `vista-desktop-ubuntu-x64` artifact and preserve its provenance, checksums, SBOM and third-party notices privately. See [Release Readiness](RELEASE_READINESS.md) for the exact package checkpoint. Keep Windows/macOS marked Coming Soon and do not publish the artifact.
+
 **Sprint update:** the staged `v0.1.0` files are the prior build and do not include the Python Edge Runtime or setup wizard. Their checksums do not cover the current source. A new private stage must wait for successful native runtime builds and refreshed installers.
 
 Queue 5 refreshed the private candidate after a Linux token-persistence security fix. The current `manifest.json`, `SHA256SUMS`, installer script pins, and three files now match; `node scripts/validate-download-release.cjs` and all three SHA-256 checks pass. Use only the current staging manifest, not historical Queue 3 hashes. See `TEST_REPORT.md` and `RELEASE_CHECKLIST.md` for remaining live API, Windows, asset-rights, and approval gates. No public download URL has been selected.

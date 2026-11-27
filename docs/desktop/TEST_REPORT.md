@@ -5,8 +5,8 @@
 - Final full Edge suite after the MQTT simulation telemetry correction: **96 passed** with `edge/.venv/bin/python -m unittest discover -s edge/tests -v` (MuJoCo-backed, hardware-disabled fixtures). This supersedes historical 88/94-test counts below. No hardware or AWS endpoint was used.
 - Final Desktop API/IPC and Electron Node regression: `npm test` passed **26 contract checks + 19 Node tests**. No live student sign-in was performed.
 - The 16-test focused correction suite also passed. It verifies correlation and telemetry order during execution, event envelope, rate/frame limits, and local recording manifest integrity. This is **local simulation only**, not Cloud acceptance.
-- Follow-up implementation is pushed to `codex/final-overnight-completion`; implementation commit `6bc4bc77fe08141b7f5f22df900c7092d78ffc0d` is based on current `main`. PR [#7](https://github.com/leduc121/vista_lab/pull/7) is open and not merged. Native run [45881238994](https://github.com/leduc121/vista_lab/actions/runs/45881238994) passed all Ubuntu, Windows and macOS matrix jobs at head `c144b4e18353c2a9851621de42f5a48f3fd57506`; the final documentation update will start another docs-triggered run. The Ubuntu artifact uploaded successfully but its 530 MB archive could not be downloaded completely in this workspace.
-- Existing private `0.1.1` Ubuntu DEB checkpoint is independently recorded below in [Desktop Distribution Handoff](../../DESKTOP_DISTRIBUTION_HANDOFF.md), but it was built locally from `13fd11f`, before this telemetry correction. It is not the final PR build artifact. `0.1.0` was not overwritten and no new public release was made.
+- Follow-up implementation is pushed to `codex/final-overnight-completion`; final PR source commit is `e51a908e73a1c176396ad87b6696ca05af8406ed`. PR [#7](https://github.com/leduc121/vista_lab/pull/7) remains open and unmerged. Native run [45882596490](https://github.com/leduc121/vista_lab/actions/runs/45882596490) passed all three configured matrix jobs at this exact head. The Ubuntu artifact uploaded, but its combined archive was too large to retrieve and inspect in this workspace.
+- Existing `0.1.1` Ubuntu DEB checkpoint was built locally from `13fd11f`, before the final telemetry/runtime corrections. It is stale and is not the final PR package. `0.1.0` was not overwritten and no new public release was made. See [Release Readiness](RELEASE_READINESS.md) for the focused post-merge Ubuntu-only artifact procedure.
 - AWS certificate activation, Production flag reload, live Shadow/mTLS, Cloud simulation E2E, physical connection/calibration/motion, physical upload and instructor review were not run. The exact owner gates and execution sequence are in [AWS Acceptance Runbook](AWS_ACCEPTANCE_RUNBOOK.md) and [Hardware Commissioning Runbook](HARDWARE_COMMISSIONING_RUNBOOK.md).
 
 ## Final targeted engineering verification — 2026-11-27
@@ -625,3 +625,22 @@ See [Final Education Platform Integration Handoff](FINAL_EDUCATION_PLATFORM_INTE
   AWS IoT broker, S3 bucket, certificate, Production credential, or hardware
   was accessed. The Web checkout used for source comparison is noted in the
   handoff and is behind its remote-tracking ref.
+
+# Targeted final R1 reconciliation — 2026-11-27
+
+## Integrated Desktop supervisor verification
+
+- Source-mode Simulation was launched through `edge-supervisor.js` with `edge/.venv/bin/python`: runtime version `0.1.0`, MuJoCo available, readiness `READY`, `hardwareEnabled=false`, MQTT uninitialized/disconnected and production MQTT disabled. Supervisor shutdown exited cleanly.
+- Source-mode Robotics was launched through the same supervisor: adapter mode `so101_follower` selected, but LeRobot/serial drivers not ready, follower disconnected and uncalibrated, readiness `ACTION REQUIRED`, and `hardwareEnabled=false`. No serial enumeration/open, certificate access, MQTT connection, arming or actuation occurred.
+- Focused tests: `node --test tests/edge-supervisor.test.cjs` passed (1/1); `edge/.venv/bin/python -m unittest edge.tests.test_mqtt_transport edge.tests.test_safety_controller edge.tests.test_runtime -v` passed (44/44). The logged shutdown exception is an injected test failure and its fail-safe assertion passed.
+- A separate hardware-disabled R1 HTTP smoke was attempted using a loopback-only temporary config. The sandbox denied local socket creation (`EPERM`) before the health endpoint; the process was terminated and the temporary config removed. No R1 HTTP acceptance is claimed.
+
+## R1 source boundary and open blocker
+
+The Desktop child source is this repository's `edge/runtime.py` or its packaged PyInstaller binary. Robotics mode uses an explicitly selected Python/source checkout. It does not launch the separate SKYNET-Thesis/se `services/robot-runtime` HTTP service. The checked external source revision is `50264300bcb7b5ea33726baf4befdbb4d761c26d` (R1 code last changed in `adee7940691e4dc6bcc14c5c7d3079da40e4ecd9`, present in the inspected API revision `f0b3d8735b608aac8670a200ff45eddf6fa24ab5`). That source permits only `fake_follower`, emits uncorrelated fake telemetry on `/telemetry`, has no ≤10-second idle Shadow heartbeat, and has no physical `so101_follower` adapter. The API deploy script does not deploy this service. The actual Edge host process, source/image revision, installation path and start command are not known, so the inspected repository state must not be represented as live Edge state.
+
+Required owner-authorized R1 source files: `services/robot-runtime/src/runtime.py`, `services/robot-runtime/src/iot.py`, and focused `services/robot-runtime/tests/test_runtime.py` coverage. The real adapter must be integrated through the approved CHECKIK/Safety Controller boundary before adding genuine readiness fields or physical telemetry. No changes were made to the external checkout. Its rollout mechanism must be identified by the Edge owner; an Education API redeploy is not sufficient evidence of an Edge update.
+
+## Package checkpoint
+
+Final PR #7 source is `e51a908e73a1c176396ad87b6696ca05af8406ed`; native CI passed. The combined Ubuntu artifact was not retrieved/inspected, and the `0.1.1` DEB from `13fd11f` is stale. After authorized merge, use the existing `.github/workflows/desktop-release-draft.yml` Ubuntu-only job with `source_sha=e51a908e73a1c176396ad87b6696ca05af8406ed` and `create_draft=false`; verify the isolated `vista-desktop-ubuntu-x64` artifact and retain it privately. No release or new package build was run in this pass.
