@@ -2,6 +2,8 @@
 
 **Scope:** source/build-input notice inventory for Desktop 0.1.0 at merge `80aef01eca657fa8a2dbe3340bac27e048619b11`, followed by an artifact-specific Ubuntu amd64 reconciliation appendix. The appendix applies only to DEB SHA-256 `a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4` built in native CI run `45628473427`. The earlier source inventory remains broader than the Ubuntu runtime and should not be read as a dependency lockfile. Consult `UBUNTU_THIRD_PARTY_RECONCILIATION.md` and the matching `ubuntu-x64-THIRD_PARTY_LICENSES.zip` for binary/SBOM mappings and verbatim package license evidence.
 
+**Release-freeze scope note (2026-11-25):** a corrected local DEB exists with SHA-256 `8eb5d74c23a3be4d2164f7e58bbbb0938467240cead40eabc328e846a29309b4`; the SBOM and license archive cited above do **not** describe that binary. No dependency/license update is asserted for it until its exact approved package tree is rescanned and reconciled. Preserve any `NOASSERTION` values; do not infer first-party or third-party licenses. Release remains blocked pending review and artifact refresh.
+
 ## First-party code and permission record
 
 - VISTA Lab Station application code is project source tracked in this repository. No root project license was found; this document does not assign a license to project code or infer legal ownership from Git authorship.

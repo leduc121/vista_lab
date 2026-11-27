@@ -254,12 +254,28 @@ app.whenReady().then(() => {
     if (!['leader-a','follower-a','leader-b','follower-b'].includes(slot)) throw new Error('Select a connected SO-101 arm.');
     if (!/^[0-9a-f-]{36}$/i.test(String(experimentId || ''))) throw new Error('Select a valid experiment.');
     const experiment = await client.experimentStatus(experimentId);
+    if ((experiment?.id || experiment?.experiment_id) !== experimentId) throw new Error('Education API did not confirm the selected experiment identity.');
+    const declaredPhysical = /physical|real_robot/i.test(String(experiment.execution_mode || experiment.executionMode || ''));
+    const physicalRun = declaredPhysical ? await client.physicalStatus(experimentId).catch((error) => {
+      if (error?.status === 404) return null;
+      throw error;
+    }) : null;
     const robotId = experiment?.robot_id || experiment?.robotId;
     if (!robotId) throw new Error('Experiment has no robot identity; recording cannot be scoped safely.');
     const diag = await edgeSupervisor.diagnostics(); const arm = diag.status?.arms?.[slot];
     if (!arm?.connected || !arm.deviceId) throw new Error('Selected arm is not connected with a verified device identity.');
     if (recordings.active) throw new Error('Another episode is recording.');
-    const result = recordings.start({ experimentId, robotId, slot, deviceId: arm.deviceId, calibrated: arm.calibrated === true, runtimeKind: /PHYSICAL/i.test(arm.mode || '') ? 'PHYSICAL_ROBOT' : /MOCK/i.test(arm.mode || '') ? 'MOCK_RUNTIME' : /SIMULATION/i.test(arm.mode || '') ? 'SIMULATION' : 'UNVERIFIED_RUNTIME' });
+    const context = experiment.context && typeof experiment.context === 'object' ? experiment.context : {};
+    const output = experiment.output_snapshot && typeof experiment.output_snapshot === 'object' ? experiment.output_snapshot : {};
+    const command = output.iot && typeof output.iot === 'object' ? output.iot : {};
+    const physicalCommand = physicalRun?.command && typeof physicalRun.command === 'object' ? physicalRun.command : {};
+    const result = recordings.start({ experimentId, robotId, slot, deviceId: arm.deviceId, calibrated: arm.calibrated === true,
+      attemptId: experiment.attempt_id || experiment.attemptId || context.attemptId,
+      programVersionId: experiment.program_version_id || experiment.programVersionId || context.programVersionId,
+      submissionId: experiment.submission_id || experiment.submissionId || context.submissionId,
+      commandId: experiment.command_id || experiment.commandId || command.commandId || physicalRun?.commandId || physicalCommand.commandId,
+      runId: experiment.run_id || experiment.runId || output.runId || physicalRun?.runId,
+      runtimeKind: /PHYSICAL/i.test(arm.mode || '') ? 'PHYSICAL_ROBOT' : /MOCK/i.test(arm.mode || '') ? 'MOCK_RUNTIME' : /SIMULATION/i.test(arm.mode || '') ? 'SIMULATION' : 'UNVERIFIED_RUNTIME' });
     const sampleOnce = async () => {
       if (!recordings.active) { recordingTimer = null; return; }
       try { const role = slot.startsWith('leader-') ? 'leader' : 'follower'; recordings.append(await edgeSupervisor.request('joint_state', { role, slot }, 3000)); }
@@ -282,13 +298,14 @@ app.whenReady().then(() => {
   });
   registerHandle('recording:upload', async (episodeId) => {
     requireLocalSession(); if (config.mock) throw new Error('Evidence upload is disabled for Demo sessions.');
-    const local = recordings.get(episodeId); const m = local.manifest;
-    if (!m.endedAtMs || !['LOCAL_RECORDED','FAILED','INTERRUPTED'].includes(m.status)) throw new Error('Only a stopped local episode can be uploaded.');
+    const local = recordings.metadata(episodeId); const m = local.manifest;
+    if (!m.endedAtMs || !['LOCAL_RECORDED','FAILED'].includes(m.status)) throw new Error('Only a stopped, non-interrupted local episode can be uploaded.');
     if (m.declaredRuntimeKind !== 'PHYSICAL_ROBOT') throw new Error('The recording upload contract accepts only owner-authorized real_robot experiments.');
-    const dir = recordings.directory(episodeId); const artifactPath = path.join(dir, 'trajectory.ndjson'); const fileSize = fs.statSync(artifactPath).size;
+    const integrity = recordings.verify(episodeId);
+    if (integrity.integrity !== 'VERIFIED') throw new Error('Recording checksum is missing or does not match its sealed manifest.');
+    const dir = recordings.directory(episodeId); const artifactPath = path.join(dir, 'trajectory.ndjson'); const fileSize = integrity.bytes;
     if (fileSize < 1 || fileSize > 256 * 1024 * 1024) throw new Error('Recording exceeds the per-file upload limit.');
-    const digest = crypto.createHash('sha256'); for await (const chunk of fs.createReadStream(artifactPath)) digest.update(chunk);
-    const file = { name: 'trajectory.ndjson', sizeBytes: fileSize, sha256: digest.digest('hex'), contentType: 'application/x-ndjson', artifactType: 'trajectory' };
+    const file = { name: 'trajectory.ndjson', sizeBytes: fileSize, sha256: integrity.sha256, contentType: 'application/x-ndjson', artifactType: 'trajectory' };
     const auth = await client.requestRecordingUpload(m.experimentId, { episodeId: m.episodeId, files: [file] });
     if (auth.episodeId !== m.episodeId || auth.robotId !== m.robotId || auth.schema !== 'vista.robot.recording.v1' || !Array.isArray(auth.uploads) || !auth.manifest || auth.manifest.uploadLast !== true) throw new Error('Education API returned an upload scope that does not match this episode.');
     recordings.updateStatus(episodeId, 'UPLOADING');
@@ -548,7 +565,7 @@ app.whenReady().then(() => {
       'createProgramVersion', 'submitAttempt', 'createSchematicExperiment', 'runSchematic',
       'experimentStatus', 'experimentEvents', 'experimentResult', 'physicalEligibility',
       'activePhysicalExecution', 'physicalStatus', 'programVersions',
-      'digitalTwinAvailability', 'issueTwinViewerScope', 'requestRecordingUpload', 'experimentRecordings', 'recordingDownload'
+      'experimentArtifacts', 'digitalTwinAvailability', 'issueTwinViewerScope', 'requestRecordingUpload', 'experimentRecordings', 'recordingDownload'
     ]);
     if (!allowed.has(method) || typeof client[method] !== 'function') return { ok: false, error: 'Method not allowed' };
     try {

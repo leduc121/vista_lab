@@ -14,6 +14,7 @@ MAX_AGE_MS = 5 * 60_000
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
 ALLOWED = {"arm.select", "home", "preview.move_xyz", "gripper.open", "gripper.close", "wait"}
 HOME = (0.0, -0.55, 1.05, -0.50, 0.0, -0.10)
+GRIPPER_OPEN_MARGIN_RAD = 0.02
 
 
 class MuJoCoSimulation:
@@ -312,7 +313,11 @@ class MuJoCoSimulation:
                            progress_span=1 / total, label="Home pose")
             elif kind in {"gripper.open", "gripper.close"}:
                 low, high = model.actuator_ctrlrange[self._actuator_ids["gripper"]]
-                targets[5] = float(low if kind == "gripper.open" else high)
+                # The position servo's transient can cross MuJoCo's soft lower
+                # joint-limit constraint when commanded exactly to the stop.
+                # Keep the simulated open target inside the verified range so
+                # measured physics frames remain valid SO-101 joint states.
+                targets[5] = float(min(high, low + GRIPPER_OPEN_MARGIN_RAD) if kind == "gripper.open" else high)
                 self._move(data, targets, duration=0.4 / command.get("speed", 1.0), emit=publish, progress_base=index / total,
                            progress_span=1 / total, label="Gripper " + kind.split(".")[1])
             elif kind == "preview.move_xyz":

@@ -39,10 +39,11 @@ class MqttTransport:
                  safety_controller: Any | None = None,
                  dedupe_path: str, client_factory: Callable[..., Any] | None = None,
                  port: int = 8883, topic_prefix: str = "vista/demo/robots",
-                 heartbeat_interval: float = 30.0,
+                 heartbeat_interval: float = 10.0,
                  runtime_kind: str = "PHYSICAL_ROBOT",
                  allow_local_test: bool = False,
-                 on_command_envelope: Callable[[dict], Any] | None = None) -> None:
+                 on_command_envelope: Callable[[dict], Any] | None = None,
+                 shadow_state: Callable[[], dict[str, Any]] | None = None) -> None:
         if not isinstance(host, str) or not host or len(host) > 253 or any(c in host for c in "/@ "):
             raise ValueError("A valid AWS IoT endpoint hostname is required.")
         if not THING_RE.fullmatch(thing_name) or not ROBOT_ID_RE.fullmatch(robot_id):
@@ -51,8 +52,8 @@ class MqttTransport:
         except ValueError as error: raise ValueError("robotId must be a database UUID.") from error
         if not re.fullmatch(r"[A-Za-z0-9/_-]{1,160}", topic_prefix) or topic_prefix.startswith("/") or topic_prefix.endswith("/"):
             raise ValueError("MQTT topic prefix is invalid.")
-        if port != 8883 or not 5 <= heartbeat_interval <= 300:
-            raise ValueError("AWS IoT requires port 8883 and a heartbeat from 5 to 300 seconds.")
+        if port != 8883 or not 5 <= heartbeat_interval <= 10:
+            raise ValueError("AWS IoT requires port 8883 and a heartbeat from 5 to 10 seconds.")
         if runtime_kind not in {"PHYSICAL_ROBOT", "SIMULATION", "MOCK_RUNTIME"}:
             raise ValueError("MQTT runtime kind is invalid.")
         if runtime_kind != "PHYSICAL_ROBOT" and not allow_local_test:
@@ -62,6 +63,7 @@ class MqttTransport:
         self.ca_file, self.cert_file, self.key_file = map(str, (ca_file, cert_file, key_file))
         self.authorize, self.safety_ready, self.on_command = authorize, safety_ready, on_command
         self.on_command_envelope = on_command_envelope
+        self.shadow_state = shadow_state
         self.safety_controller = safety_controller
         self.dedupe_path, self.client_factory = str(dedupe_path), client_factory
         self.heartbeat_interval = heartbeat_interval
@@ -72,6 +74,8 @@ class MqttTransport:
         self.last_error: str | None = None
         self.last_command: str | None = None
         self.last_telemetry_sequence = -1
+        self._telemetry_run_counts: dict[str, int] = {}
+        self._telemetry_run_last_publish: dict[str, float] = {}
         self.lock = threading.RLock()
         self.dedupe_healthy = True
         self.seen: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
@@ -124,13 +128,7 @@ class MqttTransport:
         client.will_set(f"$aws/things/{self.thing_name}/shadow/update",
                         json.dumps({"state": {"reported": self._reported(connection="offline")}}, separators=(",", ":")), qos=1, retain=False)
         client.on_connect, client.on_disconnect, client.on_message = self._on_connect, self._on_disconnect, self._on_message
-        self.client = client
-        client.connect(self.host, self.port, keepalive=30)
-        client.loop_start()
-        if not self.connected.wait(max(.1, min(timeout, 30))):
-            self.disconnect()
-            raise TimeoutError("MQTT TLS connection timed out.")
-        return self.status()
+        return self._activate_client(client, self.host, self.port, timeout)
 
     def connect_local_test(self, timeout: float = 2.0) -> dict[str, Any]:
         """Connect an injected local broker fake; this path cannot contact AWS."""
@@ -144,13 +142,35 @@ class MqttTransport:
         client.will_set(f"$aws/things/{self.thing_name}/shadow/update",
                         json.dumps({"state": {"reported": self._reported(connection="offline")}}, separators=(",", ":")), qos=1, retain=False)
         client.on_connect, client.on_disconnect, client.on_message = self._on_connect, self._on_disconnect, self._on_message
+        return self._activate_client(client, "127.0.0.1", 1883, timeout, max_timeout=10,
+                                     timeout_message="Local mock MQTT connection timed out.")
+
+    def _activate_client(self, client: Any, host: str, port: int, timeout: float, *,
+                         max_timeout: float = 30, timeout_message: str = "MQTT TLS connection timed out.") -> dict[str, Any]:
         self.client = client
-        client.connect("127.0.0.1", 1883, keepalive=30)
-        client.loop_start()
-        if not self.connected.wait(max(.1, min(timeout, 10))):
-            self.disconnect()
-            raise TimeoutError("Local mock MQTT connection timed out.")
-        return self.status()
+        loop_started = False
+        try:
+            client.connect(host, port, keepalive=30)
+            client.loop_start()
+            loop_started = True
+            if not self.connected.wait(max(.1, min(timeout, max_timeout))):
+                raise TimeoutError(timeout_message)
+            return self.status()
+        except Exception:
+            self.connected.clear()
+            self._cancel_heartbeat()
+            if self.client is client:
+                self.client = None
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+            if loop_started:
+                try:
+                    client.loop_stop()
+                except Exception:
+                    pass
+            raise
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         code = int(getattr(reason_code, "value", reason_code))
@@ -186,6 +206,7 @@ class MqttTransport:
     def _on_message(self, client, userdata, message):
         command_id, sequence = "", 0
         resource = None
+        lease_acquired = False
         try:
             if message.topic != self.topics["commands"]: raise ValueError("command_identity_invalid")
             if len(message.payload) > MAX_MESSAGE_BYTES: raise ValueError("command_payload_invalid")
@@ -203,8 +224,10 @@ class MqttTransport:
                     or issued > now + 5_000 or expires <= now or expires <= issued or expires - issued > MAX_COMMAND_TTL_MS): raise ValueError("command_expired")
             payload = envelope.get("payload")
             program = payload.get("program") if isinstance(payload, dict) else None
-            if (not isinstance(payload, dict) or set(payload) != {"runId", "programVersionId", "profile", "program"}
-                    or not isinstance(payload.get("runId"), str) or payload.get("profile") != "lesson"
+            if (not isinstance(payload, dict) or set(payload) != {"runId", "robotId", "programVersionId", "profile", "program"}
+                    or not isinstance(payload.get("runId"), str) or payload.get("robotId") != self.robot_id
+                    or not isinstance(payload.get("programVersionId"), str) or not payload["programVersionId"]
+                    or payload.get("profile") != "lesson"
                     or not isinstance(program, dict) or program.get("kind") != "robot_program" or program.get("schemaVersion") != 1
                     or not isinstance(program.get("steps"), list) or not 1 <= len(program["steps"]) <= 200): raise ValueError("command_payload_invalid")
             for step in program["steps"]:
@@ -223,15 +246,19 @@ class MqttTransport:
             if not self.authorize(envelope): raise ValueError("runtime_rejected")
             if not self.safety_ready(): raise ValueError("runtime_not_ready")
             if self.runtime_kind == "PHYSICAL_ROBOT" and not self.safety_controller.mqtt_ready(): raise ValueError("hardware_not_commissioned")
-            resource = f"mqtt:{self.robot_id}"
+            # The safety lease uses the same resource key as every other
+            # controller of this physical or simulated follower.
+            resource = "follower-a" if self.runtime_kind == "PHYSICAL_ROBOT" else "local-so101-simulation"
             self.safety_controller.acquire(resource, "MQTT", runtime_kind=self.runtime_kind,
                                            robot_id=self.robot_id, calibrated=True,
                                            hardware_authorized=self.runtime_kind == "PHYSICAL_ROBOT", device_role="follower")
+            lease_acquired = True
             with self.lock:
                 prior = self.seen.get(command_id)
                 if prior is not None:
                     if prior: self._publish_events(prior)
                     self.safety_controller.release(resource, reason="duplicate_command")
+                    lease_acquired = False
                     if not prior: self._reject(command_id, sequence, "command_replayed")
                     return
                 if any(e.get("robotId") == self.robot_id and e.get("sequence", 0) >= sequence for events in self.seen.values() for e in events): raise ValueError("command_replayed")
@@ -260,13 +287,14 @@ class MqttTransport:
                 terminal, code = "failed", str(error)[:80] or "runtime_rejected"
             finally:
                 self.safety_controller.release(resource, reason="command_finished")
+                lease_acquired = False
             finished = int(time.time() * 1000)
             events.append(self._event(command_id, "status", terminal, sequence + 2, finished, code))
             self.seen[command_id] = events
             self.seen_started[command_id] = finished
             self._persist_seen(); self._publish_events([events[-1]])
         except Exception as error:
-            if resource is not None and self.safety_controller is not None:
+            if lease_acquired and resource is not None and self.safety_controller is not None:
                 try: self.safety_controller.release(resource, reason="command_rejected")
                 except Exception: pass
             self.last_error = str(error)[:300]
@@ -290,12 +318,33 @@ class MqttTransport:
             raise
 
     def _reported(self, connection: str) -> dict[str, Any]:
-        return {"schemaVersion": 1, "connection": connection, "runtimeKind": "MOCK_RUNTIME", "hardwareEnabled": False,
-                "stopped": True, "activeRunId": None, "lastCommandSequence": 0, "reportedAtMs": int(time.time()*1000)}
+        # Shadow readiness must be derived from the live runtime. If it cannot
+        # be read, do not publish fabricated readiness or stopped state.
+        if self.shadow_state is None:
+            raise RuntimeError("Runtime Shadow status provider is required.")
+        runtime = self.shadow_state()
+        required = {"hardwareEnabled", "stopped", "activeRunId", "lastCommandSequence",
+                    "adapterMode", "armed", "calibrationReady", "fault"}
+        if not isinstance(runtime, dict) or required - runtime.keys():
+            raise RuntimeError("Runtime Shadow status is incomplete; refusing to publish readiness.")
+        runtime_kind = "MOCK_RUNTIME" if self.runtime_kind == "SIMULATION" else self.runtime_kind
+        return {"schemaVersion": 1, "connection": connection, "runtimeKind": runtime_kind,
+                **{key: runtime[key] for key in required}, "reportedAtMs": int(time.time()*1000)}
 
     def _publish_shadow(self, connection: str):
         if self.client and self.connected.is_set():
-            self.client.publish(f"$aws/things/{self.thing_name}/shadow/update", json.dumps({"state":{"reported":self._reported(connection)}}, separators=(",", ":")), qos=1, retain=False)
+            try:
+                payload = {"state": {"reported": self._reported(connection)}}
+            except Exception as error:
+                self.last_error = f"Runtime Shadow status unavailable: {error}"[:300]
+                return False
+            self.client.publish(f"$aws/things/{self.thing_name}/shadow/update", json.dumps(payload, separators=(",", ":")), qos=1, retain=False)
+            return True
+        return False
+
+    def publish_shadow_state(self) -> bool:
+        """Publish a fresh runtime report after a meaningful local state change."""
+        return self._publish_shadow("online")
 
     def publish_status(self, status: dict[str, Any]) -> bool:
         if not self.client or not self.connected.is_set(): return False
@@ -303,8 +352,10 @@ class MqttTransport:
         payload.setdefault("robotId", self.robot_id); payload.setdefault("schemaVersion", 1); payload.setdefault("occurredAtMs", int(time.time()*1000))
         return int(self.client.publish(self.topics["status"], json.dumps(payload, separators=(",", ":")), qos=1, retain=False).rc) == 0
 
-    def publish_telemetry(self, telemetry: dict[str, Any]) -> bool:
+    def publish_telemetry(self, telemetry: dict[str, Any], *, command_id: str) -> bool:
         if not isinstance(telemetry, dict) or len(json.dumps(telemetry).encode()) > MAX_MESSAGE_BYTES: raise ValueError("Telemetry payload is invalid or too large.")
+        try: UUID(command_id)
+        except (ValueError, TypeError, AttributeError) as error: raise ValueError("Telemetry requires a correlated command UUID.") from error
         measured = telemetry.get("measured")
         if (telemetry.get("robot_id") != self.robot_id or telemetry.get("schema_version") != 1
                 or telemetry.get("source_mode") != "SIMULATION" or not isinstance(telemetry.get("controller_id"), str)
@@ -319,9 +370,26 @@ class MqttTransport:
                     or not isinstance(row.get("position"), (int, float)) or not math.isfinite(row["position"])):
                 raise ValueError("Telemetry must contain the ordered six-joint SO-101 contract in deg or rad.")
         if telemetry["sequence"] <= self.last_telemetry_sequence: raise ValueError("Telemetry sequence must increase monotonically.")
-        self.last_telemetry_sequence = telemetry["sequence"]
         if not self.client or not self.connected.is_set(): return False
-        return int(self.client.publish(self.topics["telemetry"], json.dumps(telemetry, separators=(",", ":")), qos=1, retain=False).rc) == 0
+        now = time.monotonic()
+        count = self._telemetry_run_counts.get(command_id, 0)
+        last = self._telemetry_run_last_publish.get(command_id)
+        if count >= 120 or (last is not None and now - last < 0.5): return False
+        sequence = telemetry["sequence"]
+        event = {"schemaVersion": 1, "kind": "status", "status": "telemetry",
+                 "robotId": self.robot_id, "commandId": command_id,
+                 "eventId": f"{command_id}:telemetry:{sequence}", "sequence": sequence,
+                 "occurredAtMs": int(time.time() * 1000), "telemetry": telemetry}
+        published = int(self.client.publish(self.topics["status"], json.dumps(event, separators=(",", ":")), qos=1, retain=False).rc) == 0
+        if published:
+            self.last_telemetry_sequence = sequence
+            self._telemetry_run_counts[command_id] = count + 1
+            self._telemetry_run_last_publish[command_id] = now
+        return published
+
+    def end_telemetry_run(self, command_id: str) -> None:
+        self._telemetry_run_counts.pop(command_id, None)
+        self._telemetry_run_last_publish.pop(command_id, None)
 
     def _schedule_heartbeat(self):
         self._cancel_heartbeat()

@@ -79,7 +79,8 @@ class SimulatedSO101:
         self.joints.update(shoulder_lift=-35.0, elbow_flex=70.0, wrist_flex=-35.0, gripper=50.0)
 
     def status(self) -> dict[str, Any]:
-        return {"mode": self.mode, "connected": self.connected, "calibrated": False, "motionEnabled": False}
+        return {"mode": self.mode, "adapterMode": "mujoco", "connected": self.connected,
+                "calibrated": False, "motionEnabled": False}
 
     def ports(self) -> list[dict[str, Any]]:
         return []
@@ -150,6 +151,7 @@ class LeRobotSO101Adapter:
             connected = False
         return {
             "mode": self.mode,
+            "adapterMode": "so101_follower" if self.role == "follower" else "so101_leader",
             "connected": connected,
             "state": "ERROR" if self.last_error else "CALIBRATED" if connected and self.calibration_ready else "UNCALIBRATED" if connected else "DISCONNECTED",
             "calibrated": self.calibration_ready,
@@ -301,7 +303,7 @@ class EdgeRuntime:
                  leader: Adapter | None = None, arms: dict[str, Adapter] | None = None,
                  mqtt_transport_factory: Any = MqttTransport,
                  mqtt_authorizer: Any = None, mqtt_command_executor: Any = None,
-                 hardware_authorizer: Any = None,
+                 hardware_authorizer: Any = None, hardware_connect_authorizer: Any = None,
                  allow_local_mqtt_test: bool = False) -> None:
         self.simulated = simulated or SimulatedSO101()
         self.arms: dict[str, LeRobotSO101Adapter | Adapter] = {
@@ -333,6 +335,7 @@ class EdgeRuntime:
         self._mujoco_safety_sequence = 0
         self._hardware_sequences: dict[str, int] = {}
         self._hardware_authorizer = hardware_authorizer or (lambda _slot: False)
+        self._hardware_connect_authorizer = hardware_connect_authorizer or (lambda _slot: False)
         self._physical_teleop: dict[str, dict[str, Any]] = {}
         self._mqtt_factory = mqtt_transport_factory
         self._mqtt_authorizer = mqtt_authorizer or (lambda _envelope: False)
@@ -341,6 +344,8 @@ class EdgeRuntime:
         self.mqtt_transport = None
         self._mqtt_config: dict[str, Any] | None = None
         self._mqtt_last_execution: dict[str, Any] | None = None
+        self._mqtt_active_run_id: str | None = None
+        self._mqtt_last_command_sequence = 0
 
     def initialize_mqtt(self, config: dict[str, Any]) -> dict[str, Any]:
         allowed = {"host", "thingName", "robotId", "caFile", "certFile", "keyFile", "dedupePath", "port", "topicPrefix", "runtimeKind"}
@@ -364,8 +369,28 @@ class EdgeRuntime:
             safety_controller=self.safety, dedupe_path=config["dedupePath"],
             port=config.get("port", 8883), topic_prefix=config.get("topicPrefix", "vista/demo/robots"),
             runtime_kind=runtime_kind, allow_local_test=self._allow_local_mqtt_test,
+            shadow_state=self._mqtt_shadow_state,
         )
         return self.mqtt_status()
+
+    def _mqtt_shadow_state(self) -> dict[str, Any]:
+        safety = self.safety.status()
+        physical = self.arms["follower-a"].status()
+        physical_mode = self._mqtt_config is not None and self._mqtt_config.get("runtimeKind") == "PHYSICAL_ROBOT"
+        runtime_fault = safety.get("fault") or physical.get("error")
+        owners = safety.get("owners") if isinstance(safety.get("owners"), dict) else {}
+        executing = any(isinstance(owner, dict) and owner.get("state") == "EXECUTING" for owner in owners.values())
+        return {
+            "hardwareEnabled": bool(safety.get("hardwareEnabled")) if physical_mode else False,
+            "stopped": self._mqtt_active_run_id is None and not executing,
+            "activeRunId": self._mqtt_active_run_id,
+            "lastCommandSequence": self._mqtt_last_command_sequence,
+            "adapterMode": physical.get("adapterMode", "so101_follower") if physical_mode else "mujoco",
+            "armed": safety.get("state") in {"ARMED", "EXECUTING"},
+            "calibrationReady": (bool(physical.get("calibrated")) and bool(safety.get("physicalCalibrationReady")))
+                if physical_mode else bool(safety.get("calibrationReady")),
+            "fault": runtime_fault,
+        }
 
     def connect_mqtt(self) -> dict[str, Any]:
         if self.mqtt_transport is None:
@@ -387,22 +412,42 @@ class EdgeRuntime:
                 "lastExecution": self._mqtt_last_execution}
 
     def _execute_mqtt_envelope(self, envelope: dict[str, Any]) -> Any:
-        if self._mqtt_executor is not None:
-            result = self._mqtt_executor(envelope, self)
-        else:
-            if not self._allow_local_mqtt_test or self._mqtt_config.get("runtimeKind") != "SIMULATION":
-                raise PermissionError("Physical MQTT command execution is not commissioned in this runtime.")
-            result = self._execute_mqtt_simulation(envelope)
-        self._mqtt_last_execution = {"commandId": envelope.get("commandId"), "result": result}
-        return result
+        self._mqtt_active_run_id = envelope.get("payload", {}).get("runId")
+        self._mqtt_last_command_sequence = envelope.get("sequence", self._mqtt_last_command_sequence)
+        if self.mqtt_transport is not None:
+            self.mqtt_transport.publish_shadow_state()
+        try:
+            if self._mqtt_executor is not None:
+                result = self._mqtt_executor(envelope, self)
+            else:
+                if not self._allow_local_mqtt_test or self._mqtt_config.get("runtimeKind") != "SIMULATION":
+                    raise PermissionError("Physical MQTT command execution is not commissioned in this runtime.")
+                result = self._execute_mqtt_simulation(envelope)
+            self._mqtt_last_execution = {"commandId": envelope.get("commandId"), "result": result}
+            return result
+        finally:
+            self._mqtt_active_run_id = None
+            if self.mqtt_transport is not None:
+                self.mqtt_transport.publish_shadow_state()
 
     def _execute_mqtt_simulation(self, envelope: dict[str, Any]) -> dict[str, Any]:
         """Execute the existing MQTT lesson allowlist on MuJoCo under its MQTT lease."""
         payload = envelope["payload"]
         run_id = payload["runId"]
-        resource = f"mqtt:{envelope['robotId']}"
+        resource = "local-so101-simulation"
         runtime_kind = self._mqtt_config["runtimeKind"]
         frames: list[dict[str, Any]] = []
+        command_id = envelope["commandId"]
+
+        def emit_frame(frame: dict[str, Any]) -> None:
+            frames.append(frame)
+            if self.mqtt_transport is None:
+                return
+            telemetry = {"schema_version": 1, "robot_id": envelope["robotId"], "source_mode": "SIMULATION",
+                         "controller_id": "edge-mqtt-mujoco", "sequence": self.mqtt_transport.last_telemetry_sequence + 1,
+                         "measured_at": frame["measured_at"], "connection": "connected", "measured": frame["measured"]}
+            self.mqtt_transport.publish_telemetry(telemetry, command_id=command_id)
+
         self.mujoco.action_guard = self._mujoco_action_guard(
             resource, "MQTT", robot_id=envelope["robotId"], runtime_kind=runtime_kind)
         try:
@@ -410,15 +455,11 @@ class EdgeRuntime:
                 {"id": envelope["commandId"], "expiresAt": envelope["expiresAtMs"],
                  "speed": 1.0, "steps": payload["program"]["steps"]},
                 {"allowed": True, "attemptId": run_id, "expiresAt": envelope["expiresAtMs"]},
-                {"id": run_id, "status": "in_progress"}, "RUN_SIMULATION", frames.append)
+                {"id": run_id, "status": "in_progress"}, "RUN_SIMULATION", emit_frame)
         finally:
             self.mujoco.action_guard = None
-        if frames and self.mqtt_transport is not None:
-            latest = frames[-1]
-            frame = {"schema_version": 1, "robot_id": envelope["robotId"], "source_mode": "SIMULATION",
-                     "controller_id": "edge-mqtt-mujoco", "sequence": self.mqtt_transport.last_telemetry_sequence + 1,
-                     "measured_at": latest["measured_at"], "connection": "connected", "measured": latest["measured"]}
-            self.mqtt_transport.publish_telemetry(frame)
+            if self.mqtt_transport is not None:
+                self.mqtt_transport.end_telemetry_run(command_id)
         return result
 
     def _physical_action(self, slot: str, positions: list[float], sequence: int, occurred_at: float,
@@ -789,6 +830,8 @@ class EdgeRuntime:
             if any(other.status().get("connected") and other.status().get("port") == selected_port
                    for other_slot, other in self.arms.items() if other_slot != slot):
                 raise ValueError("A serial port can be owned by only one robot arm at a time.")
+            if isinstance(adapter, LeRobotSO101Adapter) and self._hardware_connect_authorizer(slot) is not True:
+                raise PermissionError("Physical LeRobot connection requires separate hardware owner authorization.")
             status = adapter.connect(selected_port, params.get("deviceId"))
             status["slot"] = slot
             self.active = "PHYSICAL ROBOT READ ONLY"

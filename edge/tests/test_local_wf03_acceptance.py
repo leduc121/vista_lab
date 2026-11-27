@@ -15,6 +15,8 @@ from edge.runtime import EdgeRuntime
 ROBOT = "f1c066c4-b5f2-45c4-b933-f034f3824dd9"
 EXPERIMENT = "4dfe1c3a-8c0a-43cc-90c5-15b977e18742"
 COMMAND = "a77433c6-0dad-48df-8b54-3a080fc33c60"
+PROGRAM_VERSION = "ad404a95-75ce-44e6-86b6-b12651fa2b22"
+RUN_ID = f"wf03-{EXPERIMENT}"
 
 
 class LocalBrokerClient:
@@ -49,7 +51,9 @@ class LocalWF03Acceptance(unittest.TestCase):
     def test_single_run_command_to_mock_evidence_contract(self):
         client = LocalBrokerClient()
         def authorize(envelope):
-            return envelope.get("payload", {}).get("runId") == EXPERIMENT and envelope.get("robotId") == ROBOT
+            return (envelope.get("payload", {}).get("runId") == RUN_ID
+                    and envelope.get("payload", {}).get("robotId") == ROBOT
+                    and envelope.get("robotId") == ROBOT)
 
         runtime = EdgeRuntime(mqtt_authorizer=authorize,
                               allow_local_mqtt_test=True,
@@ -65,22 +69,37 @@ class LocalWF03Acceptance(unittest.TestCase):
                 os.environ.pop("VISTA_IOT_ENABLED", None)
                 connected = runtime.handle({"id": "connect", "method": "mqtt_connect"})
             self.assertTrue(connected["connected"])
+            reported = [p[1]["state"]["reported"] for p in client.published if p[0].endswith("/shadow/update")]
+            self.assertTrue(reported)
+            self.assertTrue(all(entry["runtimeKind"] == "MOCK_RUNTIME" for entry in reported))
             envelope = {"schemaVersion": 1, "kind": "run", "commandId": COMMAND, "robotId": ROBOT,
-                "sequence": 1, "issuedAtMs": int(time.time() * 1000),
+                "sequence": int(time.time() * 1000), "issuedAtMs": int(time.time() * 1000),
                 "expiresAtMs": int(time.time() * 1000) + 10000,
-                "payload": {"runId": EXPERIMENT, "programVersionId": "version-local", "profile": "lesson",
+                "payload": {"runId": RUN_ID, "robotId": ROBOT, "programVersionId": PROGRAM_VERSION, "profile": "lesson",
                             "program": {"kind": "robot_program", "schemaVersion": 1,
                                         "steps": [{"type": "arm.select", "arm": "right"}, {"type": "home", "arm": "right"}]}}}
             msg = types.SimpleNamespace(topic=runtime.mqtt_transport.topics["commands"],
                                          payload=json.dumps(envelope).encode(), retain=False)
+            runtime.safety.acquire("local-so101-simulation", "blockly", runtime_kind="SIMULATION",
+                robot_id="local-so101-simulation", calibrated=True, device_role="follower")
             client.on_message(client, None, msg)
-            lifecycle = [p[1] for p in client.published if p[1].get("commandId") == COMMAND]
-            self.assertEqual([e["status"] for e in lifecycle], ["accepted", "executing", "completed"])
+            self.assertEqual(runtime.safety.status()["owners"]["local-so101-simulation"]["source"], "blockly")
+            rejected = [p[1] for p in client.published if p[1].get("commandId") == COMMAND]
+            self.assertEqual((rejected[-1]["status"], rejected[-1]["code"]), ("rejected", "execution_owned_by_another_source"))
+            runtime.safety.release("local-so101-simulation", reason="test_complete")
+            client.on_message(client, None, msg)
+            lifecycle = [p[1] for p in client.published if p[1].get("commandId") == COMMAND and p[1].get("status") != "telemetry"]
+            self.assertEqual([e["status"] for e in lifecycle], ["rejected", "accepted", "executing", "completed"], lifecycle[-1])
             self.assertTrue(all(e["robotId"] == ROBOT for e in lifecycle))
             self.assertEqual(runtime.safety.status()["owners"], {})
-            telemetry = [p[1] for p in client.published if p[0] == runtime.mqtt_transport.topics["telemetry"]]
-            self.assertTrue(telemetry)
-            self.assertEqual(telemetry[-1]["robot_id"], ROBOT)
+            telemetry_events = [p[1] for p in client.published if p[0] == runtime.mqtt_transport.topics["status"] and p[1].get("status") == "telemetry"]
+            self.assertTrue(telemetry_events)
+            self.assertEqual(telemetry_events[-1]["robotId"], ROBOT)
+            self.assertEqual(telemetry_events[-1]["commandId"], COMMAND)
+            self.assertEqual(telemetry_events[-1]["telemetry"]["robot_id"], ROBOT)
+            self.assertLess(client.published.index(next(p for p in client.published if p[1].get("status") == "telemetry")),
+                            max(i for i, p in enumerate(client.published) if p[1].get("status") == "completed"))
+            telemetry = telemetry_events[-1]["telemetry"]
 
             # Reuse Desktop's actual Node RecordingManager and manifest writer.
             js = r'''const {RecordingManager}=require('./recording-manager');
@@ -92,7 +111,7 @@ manager.append({measured:true,unit:'rad',timestamp:Date.now()/1000,joints});
 const stopped=manager.stop();
 process.stdout.write(JSON.stringify({episodeId:episode.episodeId,manifest:manager.get(episode.episodeId).manifest,sha256:stopped.sha256,artifact:require('node:fs').readFileSync(manager.directory(episode.episodeId)+'/trajectory.ndjson','utf8')}));'''
             completed = subprocess.run(["node", "-e", js, str(Path(tmp) / "recordings"),
-                json.dumps(telemetry[-1]), EXPERIMENT, ROBOT], check=True, capture_output=True, text=True)
+                json.dumps(telemetry), EXPERIMENT, ROBOT], check=True, capture_output=True, text=True)
             recorded = json.loads(completed.stdout)
             self.assertEqual(recorded["manifest"]["experimentId"], EXPERIMENT)
             self.assertEqual(recorded["manifest"]["robotId"], ROBOT)

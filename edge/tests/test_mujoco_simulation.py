@@ -87,6 +87,12 @@ class MuJoCoSimulationTests(unittest.TestCase):
         self.assertEqual(final["source_mode"], "SIMULATION")
         self.assertEqual(len(final["measured"]), 6)
         self.assertTrue(all(item["unit"] == "rad" for item in final["measured"]))
+        for frame in frames:
+            for reading in frame["measured"]:
+                joint_id = self.simulation._joint_ids[reading["name"]]
+                lower, upper = self.simulation.model.jnt_range[joint_id]
+                self.assertGreaterEqual(reading["position"], lower - 1e-6, reading["name"])
+                self.assertLessEqual(reading["position"], upper + 1e-6, reading["name"])
         endpoint = final["end_effector_m"]
         self.assertLess(sum((actual - target) ** 2 for actual, target in zip(endpoint, (.24, .22, .12))) ** .5, .025)
 

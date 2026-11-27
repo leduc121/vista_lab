@@ -1,5 +1,78 @@
 # Queue 5 final Desktop acceptance — 2026-11-20
 
+## Overnight final verification — 2026-11-27
+
+- Final full Edge suite after the MQTT simulation telemetry correction: **96 passed** with `edge/.venv/bin/python -m unittest discover -s edge/tests -v` (MuJoCo-backed, hardware-disabled fixtures). This supersedes historical 88/94-test counts below. No hardware or AWS endpoint was used.
+- Final Desktop API/IPC and Electron Node regression: `npm test` passed **26 contract checks + 19 Node tests**. No live student sign-in was performed.
+- The 16-test focused correction suite also passed. It verifies correlation and telemetry order during execution, event envelope, rate/frame limits, and local recording manifest integrity. This is **local simulation only**, not Cloud acceptance.
+- Follow-up implementation is pushed to `codex/final-overnight-completion`; implementation commit `6bc4bc77fe08141b7f5f22df900c7092d78ffc0d` is based on current `main`. PR [#7](https://github.com/leduc121/vista_lab/pull/7) is open and not merged. Native run [45881238994](https://github.com/leduc121/vista_lab/actions/runs/45881238994) passed all Ubuntu, Windows and macOS matrix jobs at head `c144b4e18353c2a9851621de42f5a48f3fd57506`; the final documentation update will start another docs-triggered run. The Ubuntu artifact uploaded successfully but its 530 MB archive could not be downloaded completely in this workspace.
+- Existing private `0.1.1` Ubuntu DEB checkpoint is independently recorded below in [Desktop Distribution Handoff](../../DESKTOP_DISTRIBUTION_HANDOFF.md), but it was built locally from `13fd11f`, before this telemetry correction. It is not the final PR build artifact. `0.1.0` was not overwritten and no new public release was made.
+- AWS certificate activation, Production flag reload, live Shadow/mTLS, Cloud simulation E2E, physical connection/calibration/motion, physical upload and instructor review were not run. The exact owner gates and execution sequence are in [AWS Acceptance Runbook](AWS_ACCEPTANCE_RUNBOOK.md) and [Hardware Commissioning Runbook](HARDWARE_COMMISSIONING_RUNBOOK.md).
+
+## Final targeted engineering verification — 2026-11-27
+
+- Final Edge regression selection: **67 passed** across local WF03, MQTT command validation/lifecycle, runtime/adapters, shared Safety Controller, serial ownership, watchdog/teleoperation, and calibration. CHECKIK and MuJoCo model/simulation suites: **13 passed**. Physical adapters were synthetic; no serial hardware was opened.
+- Final `npm test`: **26 API/IPC checks and 19 Node tests passed**. `npm run typecheck`, `npm run build:renderer`, and `git diff --check` passed. A final synthetic owner-authorization connection regression passed after adding explicit test runtime cleanup.
+- Fixed recording memory pressure and filesystem-boundary defects found during final review: checksum/line-count verification streams 128 KiB chunks; upload reads verified metadata without parsing the full trajectory into memory. Symlinked episode directories and trajectory files are rejected; recovery skips linked directories and manifest writes use exclusive random temporary files. Replay remains the path that loads frames. Tampering is rejected and surfaced in the episode list.
+- GitHub Actions was not started: `gh auth status` reports the configured GitHub token is invalid. The requested hardware-disabled focused regression suites were run locally instead. No hardware, AWS, Production database, or credentialed Production session was accessed.
+
+## Production integration follow-up — 2026-11-27
+
+- Preserved the existing student login/refresh/password-change flow, attempt-authorized local MuJoCo execution and server-owned schematic experiment/result path. The local MuJoCo run remains separate and is never represented as Production evidence or physical execution.
+- Recording start now confirms the Education API experiment identity and carries available attempt, immutable ProgramVersion, submission, command and run identifiers into the local episode manifest. The Records view exposes these correlations.
+- Recording stop seals `trajectory.ndjson` into the local manifest with SHA-256 and byte size. Listing and viewing report checksum state; corrupt episodes remain visible as `CORRUPT`. Upload now requires a stopped, non-interrupted physical episode with a valid seal, and uses the sealed digest/size. `SIMULATION`, `MOCK_RUNTIME`, and `UNVERIFIED_RUNTIME` remain blocked from upload.
+- Focused API and recording checks passed; `npm test` passed (26 API/IPC checks and 19 Node tests); `npm run typecheck` and `npm run build:renderer` passed. These are local contract tests, not a live Production acceptance.
+- Cloud MuJoCo/Twin ingestion remains unavailable in the handed-off contract: `/internal/simulation-telemetry` is server-only, and the authenticated student experiment route accepts `schematic`, not local physics. The Web server's `vista.experiment.telemetry.v1` is produced and stored server-side; Desktop does not have a student upload route for it. Physical recording upload remains a separate PHYSICAL_ROBOT-only path and was not live-tested.
+- The R1126-1901 commissioning dataset remains the existing source of truth. Its account and fixture identifiers/credentials are not available in this Desktop workspace, so no substitute records were created and no Production login or write was attempted. Instructor compatibility is source-confirmed for server-owned schematic results and accepted backend artifacts; the local MuJoCo output is not yet compatible with instructor review.
+
+## Edge safety and readiness follow-up — 2026-11-27
+
+- Unified MQTT and local MuJoCo safety ownership: simulation commands now acquire the same `local-so101-simulation` lease as local simulation control; physical cloud commands acquire `follower-a`. A rejected competing command no longer releases another controller's lease. The WF03 test covers conflict, preserved ownership, release, and retry.
+- A Robotics profile now reports ready only when the required drivers are present and the physical `so101_follower` is connected and calibrated. Python package availability alone no longer implies device readiness.
+- Physical LeRobot connection now has a separate injected owner-authorization callback before the adapter invokes its connect operation. The default denies access. MQTT connection failures clean up their client/timer state so a later retry can proceed.
+- The Shadow's `armed` and `stopped` fields now reflect shared controller ownership, including local control. Adapter status explicitly identifies `so101_follower` and `mujoco` modes.
+- Focused checks passed: 35 Edge MQTT/runtime/WF03 Python tests and the Electron supervisor Node test. Full `edge/tests`: **94 passed**. These used fake brokers, MuJoCo and synthetic adapters; no AWS endpoint, certificate activation, serial device, calibration write, or physical motion was used.
+- Remaining contract/ownership blockers: R1 physical adapter ownership and the current CHECKIK/LeRobot handoff are external to this Desktop repository; the available `se` checkout is an older snapshot. The authoritative 2026-11-26/27 handoff files are absent. Consequently no R1 hardware dispatch, physical measured telemetry publication, or Twin-ingestion claim was added. AWS mTLS code remains opt-in and has not been activated with owner-provisioned certificates. Production deployment and physical commissioning remain unperformed.
+
+## Edge runtime integration delta — 2026-11-27
+
+- The MQTT Device Shadow now takes `hardwareEnabled`, `stopped`, `activeRunId`, `lastCommandSequence`, `adapterMode`, `armed`, `calibrationReady`, and `fault` from the live Edge Runtime and shared safety controller. It refuses to publish a readiness report when the provider is absent or incomplete. Simulation is reported as `MOCK_RUNTIME` with hardware disabled; the physical adapter mode is `so101_follower`.
+- MQTT command execution updates the active run and accepted command sequence in the Shadow on start and completion. The periodic heartbeat is capped at 10 seconds and offline reporting remains in place.
+- `edge/.venv/bin/python -m unittest discover -s edge/tests -v`: **92 passed**. This includes fake broker, local MuJoCo, runtime, and synthetic adapter tests; no AWS endpoint, certificate, serial connection, calibration write, or physical motion was used.
+- `npm test`: **26 API/IPC contract checks and 18 Node tests passed**. `npm run typecheck`, `npm run build:renderer`, and `git diff --check` passed.
+- The five 2026-11-26/27 `docs/operations/*` handoff files requested by the master prompt are absent from the available `/home/quangduc/Code/vista/se` checkout (`rc/checkpoint-2026-11-16`, with unrelated dirty files). The available local integration handoff documents that the MQTT telemetry topic is not wired to Twin ingestion and there is no Desktop-authenticated MuJoCo evidence-ingestion contract. Do not claim Cloud simulation, physical Twin telemetry, or command-bound simulation evidence acceptance from these local tests.
+- AWS certificate activation, Production MQTT, Cloud simulation E2E, physical commissioning, package refresh, final PR, merge, and public release remain **NOT RUN**. Existing uncommitted user changes remain in the worktree.
+
+## Production closure verification delta — 2026-11-26
+
+- Lightweight source review confirms student login/refresh/logout, assignment/attempt/program/schematic experiment routes, and attempt-bound Twin scope routes are wired under `/api/v1`; the implementation refreshes expired sessions and clears the session on `SESSION_ROTATED`. This is source/contract evidence only.
+- In-sandbox DNS lookups failed for `api.skynex.best` and `api.github.com`. The same read-only requests with the supported network escalation resolved both hosts and returned HTTP 200. This is sandbox network isolation, not host DNS failure. The unauthenticated Production capabilities response was `{"temporaryPasswordEnabled":true}`; no student data/authenticated route was accessed.
+- Public GitHub release metadata and `SHA256SUMS` confirm v0.1.0 is published. Tag target is `d3bd155c72c4cbec8b0ea145ea46f1002fef8a82`; the DEB manifest and GitHub asset metadata agree at 131,395,882 bytes and SHA-256 `a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4`. `BUILD_PROVENANCE.txt` records source SHA `80aef01eca657fa8a2dbe3340bac27e048619b11` and workflow run `45628473427`. The 125 MiB DEB was not fetched.
+- Clarified the recording boundary in the [integration handoff](FINAL_EDUCATION_PLATFORM_INTEGRATION_HANDOFF_2026-11-25.md): Desktop contains an API-authorized presigned upload flow for stopped `PHYSICAL_ROBOT` recordings (trajectory then manifest), but its deployed behavior has not been live-verified. `SIMULATION`, `MOCK_RUNTIME`, and unverified episodes are rejected. MuJoCo capture-to-submission evidence and instructor review remain unaccepted.
+- Production v0.1.0 asset availability, exact DEB hash/size, tag/source provenance, package metadata, launcher/runtime dependency behavior, and license notices cannot be matched to the published bytes without the release asset. Existing local candidate evidence is not evidence for that published asset.
+- Contract inspection of the available Web source confirms the server `schematic` run is bound to the authenticated student, attempt/classroom/assignment, `LearningSubmission`, and immutable ProgramVersion; it persists `output_snapshot`, metrics, and lifecycle events, and teacher review projects those records. The same backend explicitly rejects `executionMode:"simulation"`; schematic is not MuJoCo telemetry, no external artifact row is created, and no supported student route ingests Desktop-generated MuJoCo data. This source-level result is documented in the [integration handoff](FINAL_EDUCATION_PLATFORM_INTEGRATION_HANDOFF_2026-11-25.md); the available source checkout is an older snapshot, not proof of current deployment.
+- Fixed the confirmed Desktop IPC defect: `experimentArtifacts` was implemented in `api.js` and called by the renderer but omitted from the main-process method allowlist, so evidence listing returned “Method not allowed.” Added it to the allowlist and added a regression assertion. `node tests/api.contract.test.cjs`: **26 passed**.
+- R1126-1901 classroom, assignment, experiment, student and robot-entitlement IDs have not been provided to this Desktop workspace. The exact reuse-only checkpoint and acceptance expectation are documented in the integration handoff; no substitute data was created and Claude was not polled.
+- Simulation remains the only accepted execution mode for the prepared connected journey. Physical calibration/motion, Production MQTT, AWS, and interactive Electron/browser acceptance were not performed.
+
+**Desktop decision:** CONDITIONAL GO for the previously evidenced local Ubuntu Simulation scope only; **NO-GO / NOT ACCEPTED** for connected Production student-to-instructor evidence, physical hardware, and AWS. The published artifact itself remains unverified.
+
+## Final release candidate freeze — 2026-11-25
+
+Release decision: **NOT READY — RELEASE BLOCKERS REMAIN**. The final priority and release-gate classification is in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). The Draft DEB's verified local copy retains SHA-256 `a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4` and the known simulated gripper limit defect. A separate corrected local candidate hash `8eb5d74c23a3be4d2164f7e58bbbb0938467240cead40eabc328e846a29309b4` passed the packaged simulation smoke, but is not in the Draft, owner-reviewed, merged, or covered by a refreshed binary SBOM/reconciliation.
+
+Final targeted regression: `edge/.venv/bin/python -m unittest discover -s edge/tests -v` **88 passed**; `npm test` **25 API/IPC/security contract checks and 18 Node tests passed**; `npm run typecheck` and `npm run build:renderer` passed; packaged extracted DEB Electron/MuJoCo smoke passed at 1400×900 with Demo fixture, simulation, locked hardware, and safe exit. The actual images are [`MuJoCo workspace`](evidence/final-freeze-mujoco-electron.png) and [`runtime profile`](evidence/final-freeze-runtime-profile-electron.png). Package metadata/desktop file checks passed. Clean APT install/menu/uninstall/reinstall remain unverified.
+
+P1 blockers: Draft package contains the known simulation joint-limit defect; recording is not associated with the Blockly MuJoCo command/experiment/submission; final PR/owner review cannot proceed because GitHub CLI authentication is invalid and API access failed. No merge, Draft refresh, or publication happened. Current source edits remain uncommitted. No new package, platform build, SBOM, or license archive was generated.
+
+## Final installation and student UX acceptance — 2026-11-25
+
+See [Final Installation and Student UX Acceptance](FINAL_INSTALLATION_STUDENT_UX_ACCEPTANCE_2026-11-25.md) and the updated [English User Guide](USER_GUIDE_EN.md). The corrected local DEB candidate is `dist/phase6-candidate/VISTA Lab Station-0.1.0-amd64.deb`, SHA-256 `8eb5d74c23a3be4d2164f7e58bbbb0938467240cead40eabc328e846a29309b4`. Its `amd64` package metadata, declared dependencies, extracted payload, desktop entry validation, and 512×512 icon passed static checks. Existing packaged MuJoCo/Electron evidence remains in the Robotics Lab acceptance report.
+
+No clean-image APT install, application menu launch, uninstall, or reinstall was performed: Docker's daemon is inaccessible, debootstrap is unavailable, and owner-host privileged installation was not authorized. A fresh Xvfb smoke attempt was blocked before launch by sandbox loopback `EPERM`. Candidate target/build evidence is Ubuntu 26.04.1 only; other Ubuntu releases are not claimed. The older Draft DEB has another hash and retains the simulated gripper-limit defect; do not distribute it as this corrected candidate. This turn made documentation-only edits and did not rebuild or change the DEB.
+
+Student UX documentation now distinguishes packaged Simulation from operator-managed Robotics and explicitly states that local Blockly simulation does not upload command-bound evidence. The application screens remain a mixed Vietnamese/English interface; no broad localization or redesign was undertaken.
+
 ## Current completion verification — 2026-11-23
 
 This update supersedes earlier status statements below where they conflict. The
@@ -431,3 +504,124 @@ SQL row snapshot): `/tmp/vista-lms-934f0c7e-evidence/`. The fixture's existing
 database because the checked-in Phase 2.4.3 student fixture omits it. Optional
 temporary-password and Twin WebSocket flows were skipped. Shared Supabase and
 all non-runner Docker resources were left untouched.
+
+## Student Lab product acceptance — 2026-11-25
+
+See [Student Lab Product Acceptance](STUDENT_LAB_ACCEPTANCE_2026-11-25.md) for
+this phase's student journey, capability matrix, defects and release
+recommendation.
+
+- The exact Ubuntu DEB candidate was extracted and launched under Xvfb without
+  rebuilding or installing it system-wide. Its SHA-256 and size match the
+  owner-provided values.
+- **PASS — candidate Electron UI + local MuJoCo:** Demo login, Labs, assignment,
+  Blockly save/version, explicit local MuJoCo execution, Demo schematic result,
+  and Simulation Profile readiness completed. MuJoCo reported two validated
+  steps on `scene.xml`, physics telemetry and `motionEnabled=false`. The
+  candidate runtime probe independently returned 7 simulation frames and
+  `motionEnabled=false`.
+- **PASS — packaged Simulation Profile:** bundled Edge Runtime ran Python
+  3.11.18 with MuJoCo and the SO-101 scene available. Hardware output remained
+  disabled.
+- The smoke now accepts `VISTA_SMOKE_RUN_LOCAL_MUJOCO=1` to exercise the
+  explicit local MuJoCo button and save `electron-mujoco.png`. Candidate
+  screenshots are in `/tmp/vista-electron-smoke/`.
+- **PARTIAL — recording/replay:** local episode recording and replay are
+  implemented for measured joint streams, but the recorder samples connected
+  LeRobot arm state. The Blockly MuJoCo path does not feed its physics frames
+  to the recorder. Simulation trajectory evidence capture/upload is unavailable.
+- Real student API persistence, authenticated Twin, object storage, physical
+  hardware, and close/reopen with retained user data were not exercised.
+- Candidate SHA-256: `a5dbca4d54a28de1aae2f254b08484460efb3db6a3eeee7828d8dc24ea3ba8e4`
+  (131395882 bytes). **Superseded for strict simulated joint-limit claims:** the original owner candidate had a gripper telemetry overrun. The local rebuilt candidate hash and verification are in the robotics acceptance report.
+- No Production/AWS, shared Supabase, MQTT, physical hardware, merge or
+  publication was used.
+
+## Integration release verification — 2026-11-27
+
+- **PASS — local regression suites:** `npm test` (26 API/IPC checks and 19
+  Node runtime tests), `edge/.venv/bin/python -m unittest discover -s
+  edge/tests -v` (94 tests), `npm run typecheck`, and
+  `npm run build:renderer`.
+- **PASS — Ubuntu amd64 package:** built `0.1.1` from source commit
+  `13fd11fa031168ed1d237784293c00b35d5794ca` with the native Python 3.11 /
+  PyInstaller and electron-builder Linux DEB pipeline. The package metadata
+  reports `vista-lab-station`, version `0.1.1`, architecture `amd64`; runtime
+  dependencies are the nine GTK, NSS, XSS, XTest, XDG, AT-SPI, UUID, and Secret
+  Service libraries encoded in the DEB control metadata.
+- **PASS — package launch and integrity:** the packaged desktop entry points to
+  `/opt/VISTA Lab Station/vista-lab-station`; packaged Electron startup and the
+  Demo login, Blockly save/version, and runtime-profile flow passed under Xvfb.
+  `ldd` found no missing shared libraries in the launcher or Edge Runtime. The
+  DEB SHA-256 is
+  `402aeca230f4362f0f1e2f2336b606c340cee776478a94595fdf1f4c8a2a7e42`.
+- **PASS — build evidence:** the ignored local checkpoint at
+  `dist/ubuntu-0.1.1-checkpoint/` contains the DEB, SHA-256 manifest, full source
+  SHA/build command provenance, an 18-component runtime Python CycloneDX SBOM,
+  and a validated third-party license/notice archive with 568 collected files.
+  No v0.1.0 files are in this checkpoint. It is not a published release.
+- **BLOCKED — PR discovery and CI:** the feature branch and commits were pushed
+  successfully. GitHub CLI reports its configured token is invalid and cannot
+  connect to `api.github.com`; no browser session is available here. I could not
+  discover or create/update the integration PR, or inspect GitHub Actions
+  results. Restore GitHub API access to complete and verify those remote steps.
+- No Windows/macOS package was built. No protected branch was merged and no
+  public release was created.
+
+## Final Robotics Lab acceptance — 2026-11-25
+
+See [Final Robotics Lab Acceptance](ROBOTICS_LAB_FINAL_ACCEPTANCE_2026-11-25.md)
+for rebuilt candidate hash and statuses for simulation, programming, CheckIK, fake Robotics Profile,
+shared safety, recording/evidence, and AI/VLA.
+
+- **PASS — rebuilt candidate Simulation Profile:** SO-101 rendered in the
+  1400×900 native Electron view. The five-step packaged MuJoCo runtime check
+  completed with 22 measured frames, all joints in range, and physical output
+  disabled. Two repeated sessions on the original owner candidate also
+  confirmed fresh simulation state and graceful stop.
+- **PASS — strict simulated joint-limit telemetry on rebuilt candidate:** the
+  original owner DEB reported `-0.188738 rad` against the `-0.174533 rad`
+  gripper lower limit. The corrected packaged runtime completed the same five
+  steps with 22 frames and every measured joint inside its declared range;
+  gripper minimum was `-0.170727 rad`.
+- **FAIL — Cartesian target fidelity:** CheckIK URDF and MuJoCo base frames
+  retain an approximately 19.8–20 mm systematic offset. The existing guard
+  rejects larger mismatches; this remains experimental and Simulation-only.
+- **BLOCKED — command-bound evidence:** existing `vista.robot.recording.v1`
+  manager/hash and a local mock evidence contract pass, but the manifest lacks
+  `commandId`, Desktop capture is not wired to Blockly MuJoCo frames, and no
+  approved live upload association was exercised. No parallel schema/API was
+  introduced.
+- **PASS — targeted tests:** Education API contract (25 passed); five focused
+  Node suites (all passed); Edge MuJoCo/CheckIK/safety/teleop/runtime/calibration/
+  MQTT/policy/WF03 selection (85 passed, 0 failed). Tests use mocks/fakes where
+  stated; they are not physical or AWS acceptance.
+- Robotics Profile’s Python 3.12 interpreter is installed but lacks Torch,
+  LeRobot, MuJoCo and pySerial. No LeRobot installation, serial enumeration,
+  calibration, device configuration, or physical connection occurred.
+- The original owner DEB remains untouched; a separate local DEB candidate was
+  rebuilt to fix the simulated gripper limit and passed packaged verification.
+  It was not published. Command-bound evidence, Cartesian frame accuracy, and
+  physical commissioning remain open.
+
+## Final Education Platform Integration handoff — 2026-11-25
+
+See [Final Education Platform Integration Handoff](FINAL_EDUCATION_PLATFORM_INTEGRATION_HANDOFF_2026-11-25.md).
+
+- **PASS — local WF03 contract only:** updated the Desktop MQTT validator and
+  local fixture to require the inner `payload.robotId` used by the available
+  Web `PhysicalExecutionService` payload, matching the outer robot identity.
+  Also corrected MQTT Shadow `runtimeKind` reporting to preserve configured
+  `SIMULATION`/`MOCK_RUNTIME`/`PHYSICAL_ROBOT` identity rather than always saying
+  `MOCK_RUNTIME`.
+- **PASS — targeted checks:** `edge.tests.test_local_wf03_acceptance` plus
+  `edge.tests.test_mqtt_transport` (10 passed), `node tests/api.contract.test.cjs`
+  (25 passed), and `node --test tests/recording-manager.test.cjs` (1 suite).
+- **BLOCKED — Desktop-to-platform evidence:** the local recording manifest has
+  no command/attempt/submission/ProgramVersion association and the Education
+  API has no supported Desktop upload route. Mock evidence does not perform
+  S3, API persistence, presigned transfer, or WF04 teacher review.
+- **NOT RUN — production services:** no `api.skynex.best` request, Twin socket,
+  AWS IoT broker, S3 bucket, certificate, Production credential, or hardware
+  was accessed. The Web checkout used for source comparison is noted in the
+  handoff and is behind its remote-tracking ref.

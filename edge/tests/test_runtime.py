@@ -60,6 +60,101 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(status["motionEnabled"])
         self.assertEqual(set(status["arms"]), {"leader-a", "follower-a", "leader-b", "follower-b"})
 
+    def test_mqtt_shadow_state_is_derived_from_safety_and_selected_runtime(self):
+        self.runtime._mqtt_config = {"runtimeKind": "SIMULATION"}
+        simulation = self.runtime._mqtt_shadow_state()
+        self.assertEqual(simulation["adapterMode"], "mujoco")
+        self.assertFalse(simulation["hardwareEnabled"])
+        self.assertFalse(simulation["armed"])
+        self.assertTrue(simulation["calibrationReady"])
+        self.assertTrue(simulation["stopped"])
+        self.assertIsNone(simulation["activeRunId"])
+
+        self.runtime._mqtt_config = {"runtimeKind": "PHYSICAL_ROBOT"}
+        physical = self.runtime._mqtt_shadow_state()
+        self.assertEqual(physical["adapterMode"], "so101_follower")
+        self.assertFalse(physical["hardwareEnabled"])
+        self.assertFalse(physical["calibrationReady"])
+        self.assertIsNone(physical["fault"])
+
+        self.runtime._mqtt_config = {"runtimeKind": "SIMULATION"}
+        self.runtime.safety.acquire("follower-a", "teleoperation", runtime_kind="SIMULATION",
+            robot_id="local-follower-a", calibrated=True, device_role="follower")
+        self.runtime.safety.set_continuous("follower-a", "teleoperation", True)
+        running = self.runtime._mqtt_shadow_state()
+        self.assertTrue(running["armed"])
+        self.assertFalse(running["stopped"])
+
+    def test_simulation_telemetry_is_correlated_and_published_during_command(self):
+        import time
+
+        class FakeMujoco:
+            action_guard = None
+            def execute(self, _command, _policy, _run, _method, on_frame):
+                on_frame({"measured_at": "2026-11-27T00:00:00Z",
+                          "measured": [{"name": name, "position": 0.0, "unit": "rad"} for name in JOINTS]})
+                self.result_returned = True
+                return {"state": "succeeded"}
+
+        class FakeTransport:
+            last_telemetry_sequence = -1
+            def __init__(self): self.events=[]; self.ended=[]
+            def publish_telemetry(self, frame, *, command_id):
+                self.events.append((frame, command_id, hasattr(mujoco, "result_returned") and mujoco.result_returned))
+                self.last_telemetry_sequence = frame["sequence"]
+                return True
+            def end_telemetry_run(self, command_id): self.ended.append(command_id)
+
+        mujoco, transport = FakeMujoco(), FakeTransport()
+        self.runtime.mujoco = mujoco
+        self.runtime.mqtt_transport = transport
+        self.runtime._mqtt_config = {"runtimeKind": "SIMULATION"}
+        command = "7b2f9c1e-0d34-4c6a-8e51-2a9b6d4c7f03"
+        result = self.runtime._execute_mqtt_simulation({"commandId": command, "robotId": "f1c066c4-b5f2-45c4-b933-f034f3824dd9",
+            "expiresAtMs": int(time.time() * 1000) + 5000,
+            "payload": {"runId": "run-1", "program": {"steps": []}}})
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(len(transport.events), 1)
+        frame, event_command, completed_before_publish = transport.events[0]
+        self.assertEqual(event_command, command)
+        self.assertFalse(completed_before_publish)
+        self.assertEqual((frame["robot_id"], frame["source_mode"], frame["sequence"]),
+                         ("f1c066c4-b5f2-45c4-b933-f034f3824dd9", "SIMULATION", 0))
+        self.assertEqual(transport.ended, [command])
+
+    def test_physical_lerobot_connection_requires_injected_owner_authorization(self):
+        calls = []
+        class SyntheticFollower:
+            is_connected = False
+            is_calibrated = True
+            def connect(self, calibrate=False):
+                calls.append(("connect", calibrate))
+                self.is_connected = True
+            def disconnect(self):
+                calls.append(("disconnect",))
+                self.is_connected = False
+
+        def make_adapter():
+            return LeRobotSO101Adapter("follower", "follower-a",
+                device_factory=lambda *_args: SyntheticFollower(),
+                port_provider=lambda: [{"path": "/dev/synthetic"}],
+                safe_stop=lambda _robot: "synthetic-stop")
+        denied = EdgeRuntime(physical=make_adapter())
+        request = {"id": "connect", "method": "connect", "params": {
+            "mode": "PHYSICAL ROBOT READ ONLY", "confirmed": True,
+            "role": "follower", "slot": "follower-a", "port": "/dev/synthetic", "deviceId": "fake-only"}}
+        with self.assertRaisesRegex(PermissionError, "owner authorization"):
+            denied.handle(request)
+        self.assertEqual(calls, [])
+        denied.close()
+
+        approved = EdgeRuntime(physical=make_adapter(), hardware_connect_authorizer=lambda slot: slot == "follower-a")
+        connected = approved.handle(request)
+        self.assertEqual(connected["adapterMode"], "so101_follower")
+        self.assertTrue(connected["connected"])
+        self.assertEqual(calls, [("connect", False)])
+        approved.close()
+
     def test_physical_adapter_exposes_only_gated_send_action(self):
         adapter = LeRobotSO101Adapter("follower", "follower-a")
         self.assertTrue(callable(adapter.send_action))
