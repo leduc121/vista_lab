@@ -1,5 +1,9 @@
 # Queue 06 — Final Desktop regression and commissioning readiness
 
+## Locked environment and final pre-commissioning addendum (2026-11-28)
+
+Earlier statements below that the compatible LeRobot environment was unavailable describe the original Queue 06 checkpoint. The final gate installed `edge/robot-runtime/.venv` from the unchanged `uv.lock` using `uv sync --project edge/robot-runtime --locked --python 3.12`. Python 3.12.14 and pinned LeRobot 0.6.1, Torch 2.7.1+cpu (CPU-only), NumPy 2.2.6, MuJoCo 3.17.0, pySerial 3.5, and Feetech SDK 1.0.0 were verified. Both public SO-101 class/config imports, `LeRobotSO101Adapter`, and `CalibrationWorkflow` imported successfully; 56 targeted mock Runtime, calibration, serial, safety, and teleoperation tests passed under this interpreter. Desktop supervisor discovery confirmed driver readiness but correctly returned `ACTION REQUIRED` for the disconnected, uncalibrated follower with `hardwareEnabled=false` and `motionEnabled=false`. The packaged Ubuntu 0.1.1 Demo/Simulation Electron smoke passed; the bundled Simulation runtime is separate from the external Robotics interpreter, so no rebuild was required for this environment-only installation. These checks do not constitute physical verification. See `CLAUDE_DESKTOP_INTEGRATION_HANDOFF.md` for test evidence, missing hardware safety inputs, and Claude-owned WF03 dependencies.
+
 **Date:** 2026-11-28
 **Repository:** `vista-lab-station`
 **Branch:** `codex/final-overnight-completion`

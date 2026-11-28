@@ -26,19 +26,13 @@ printf '%s\n' \
 
 The Desktop Settings page now has explicit Simulation and Robotics profiles. The packaged app still uses its bundled Python 3.11 executable for Simulation. Robotics requires the operator to select the isolated Python executable and an Edge source directory containing `edge/runtime.py`; Settings validates Python 3.12, CPU-only Torch, LeRobot, SO101 leader/follower imports, MuJoCo and PySerial before switching. It shuts down the current child first and refuses a switch while a robot is connected or execution is active. It never connects an arm when selected. Because source redistribution rights for checkIk-derived files are not confirmed, the Edge source tree is not bundled in a new artifact; point the optional profile to the authorized local checkout. `fakeRobot=true` and `hardwareEnabled=false` remain enforced by runtime defaults.
 
-## Verified in isolated `/tmp` environment
+## Verified in project environment (2026-11-28)
 
-- Python 3.12.14; Torch `2.7.1+cpu`; `torch.version.cuda is None`; `torch.cuda.is_available() is False`.
-- NumPy 2.2.6; LeRobot 0.6.1; Feetech SDK 1.0.0; MuJoCo 3.17.0; PyInstaller 6.19.0; Paho 2.2.0; PySerial 3.5.
-- `uv.lock --check` and `uv pip check`: pass (62 locked packages / 57 installed runtime metadata entries checked after sync).
-- `SO101Follower` and `SO101Leader` classes imported and initialized with fake path strings; both report disconnected. No `.connect()` call, serial open, calibration read/write, or motor command occurred.
-- Shared Edge Runtime source under Python 3.12 reports `lerobot=true`, `mujoco=true`, MuJoCo simulation available, `fakeRobot=true`, `hardwareEnabled=false`; shutdown passes.
-- Electron `EdgeSupervisor` launched the Python 3.12 profile and returned `READY`, `SIMULATION`, `lerobot=true`, `mujoco=true`; the child shut down before any other runtime was started.
-- Native Electron smoke verified the Settings profile selector and hardware-disabled status. It did not invoke the file picker or connect hardware.
-- Existing mock `send_action` test through LocalSafetyController: pass, 1/1 under Python 3.12.
-- Temporary environment footprint: approximately 1.2 GiB. This includes CPU Torch, TorchVision, MuJoCo, OpenCV and build/test dependencies. No model checkpoint was downloaded.
-
-The verified interpreter used for the current supervisor probe is still under `/tmp`; the Desktop does not hardcode or depend on that path. The lockfile is the reproducible installation source. On the demo host, recreate it in `edge/robot-runtime/.venv` and select that interpreter in Settings. This environment is not committed or bundled.
+- Exact command `uv sync --project edge/robot-runtime --locked --python 3.12`: passed; Python 3.12.14; LeRobot 0.6.1; Torch `2.7.1+cpu`, `torch.version.cuda is None` and CUDA unavailable; NumPy 2.2.6; MuJoCo 3.17.0; pySerial 3.5; Feetech SDK 1.0.0; TorchVision 0.22.1+cpu; Paho 2.2.0; PyInstaller 6.19.0; CMake 3.31.6.
+- Public LeRobot 0.6.1 SO-101 imports/configs, the `LeRobotSO101Adapter`, and `CalibrationWorkflow` imported successfully. Signature inspection confirmed the adapter's `connect(calibrate=False)`, leader `get_action`, follower `get_observation` / `send_action` APIs. No physical connection, serial enumeration/open, calibration read/write, or motor command was made.
+- 56 mocked tests passed under the project interpreter: Runtime/adapter, calibration, serial ownership, safety controller and teleoperation suites.
+- `EdgeSupervisor` launched the selected project Python and this source checkout. Robotics driver readiness was true, but diagnostics correctly remained `ACTION REQUIRED`: follower disconnected and uncalibrated, `hardwareEnabled=false`, `motionEnabled=false`. The app does not auto-connect or arm.
+- Packaged Ubuntu 0.1.1 Electron Demo/Simulation smoke passed after installation. The package continues to use its bundled Simulation Edge executable; the optional Robotics Python path remains an explicit external selection. The external project `.venv` is gitignored and not bundled. No model checkpoint was downloaded.
 
 ## Runtime choice
 
