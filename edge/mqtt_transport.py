@@ -17,6 +17,7 @@ from uuid import UUID
 MAX_MESSAGE_BYTES = 64 * 1024
 MAX_COMMAND_TTL_MS = 60_000
 ROBOT_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
+RUN_ID_RE = re.compile(r"^wf03-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 THING_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 ALLOWED_STEPS = {"arm.select", "home", "gripper.open", "gripper.close", "wait"}
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
@@ -76,6 +77,10 @@ class MqttTransport:
         self.last_telemetry_sequence = -1
         self._telemetry_run_counts: dict[str, int] = {}
         self._telemetry_run_last_publish: dict[str, float] = {}
+        # Lifecycle event sequence is distinct from the measured-frame counter.
+        # The contract requires telemetry events to follow ACK/executing events.
+        self._command_event_sequences: dict[str, int] = {}
+        self._active_telemetry_commands: set[str] = set()
         self.lock = threading.RLock()
         self.dedupe_healthy = True
         self.seen: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
@@ -225,7 +230,8 @@ class MqttTransport:
             payload = envelope.get("payload")
             program = payload.get("program") if isinstance(payload, dict) else None
             if (not isinstance(payload, dict) or set(payload) != {"runId", "robotId", "programVersionId", "profile", "program"}
-                    or not isinstance(payload.get("runId"), str) or payload.get("robotId") != self.robot_id
+                    or not isinstance(payload.get("runId"), str) or not RUN_ID_RE.fullmatch(payload["runId"])
+                    or payload.get("robotId") != self.robot_id
                     or not isinstance(payload.get("programVersionId"), str) or not payload["programVersionId"]
                     or payload.get("profile") != "lesson"
                     or not isinstance(program, dict) or program.get("kind") != "robot_program" or program.get("schemaVersion") != 1
@@ -268,6 +274,7 @@ class MqttTransport:
                                else self.seen_started.get(key, now) + MAX_COMMAND_TTL_MS <= now)]
                 for key in expired:
                     self.seen.pop(key, None); self.seen_started.pop(key, None)
+                    self._command_event_sequences.pop(key, None)
                 if len(self.seen) >= 5000: raise ValueError("command_replayed")
                 self.seen[command_id] = []
                 self.seen_started[command_id] = now
@@ -276,9 +283,11 @@ class MqttTransport:
             occurred = int(time.time() * 1000)
             events = [self._event(command_id, "ack", "accepted", sequence, occurred),
                       self._event(command_id, "status", "executing", sequence + 1, occurred)]
+            self._command_event_sequences[command_id] = sequence + 1
             self.seen[command_id] = events
             self.seen_started[command_id] = occurred
             self._persist_seen(); self._publish_events(events)
+            self._active_telemetry_commands.add(command_id)
             try:
                 result = self.on_command_envelope(envelope) if self.on_command_envelope else self.on_command(payload)
                 if result is False: raise RuntimeError("runtime_rejected")
@@ -286,10 +295,13 @@ class MqttTransport:
             except Exception as error:
                 terminal, code = "failed", str(error)[:80] or "runtime_rejected"
             finally:
+                self._active_telemetry_commands.discard(command_id)
                 self.safety_controller.release(resource, reason="command_finished")
                 lease_acquired = False
             finished = int(time.time() * 1000)
-            events.append(self._event(command_id, "status", terminal, sequence + 2, finished, code))
+            terminal_sequence = max(sequence + 2, self._command_event_sequences.get(command_id, sequence + 1) + 1)
+            events.append(self._event(command_id, "status", terminal, terminal_sequence, finished, code))
+            self._command_event_sequences[command_id] = terminal_sequence
             self.seen[command_id] = events
             self.seen_started[command_id] = finished
             self._persist_seen(); self._publish_events([events[-1]])
@@ -356,6 +368,8 @@ class MqttTransport:
         if not isinstance(telemetry, dict) or len(json.dumps(telemetry).encode()) > MAX_MESSAGE_BYTES: raise ValueError("Telemetry payload is invalid or too large.")
         try: UUID(command_id)
         except (ValueError, TypeError, AttributeError) as error: raise ValueError("Telemetry requires a correlated command UUID.") from error
+        if command_id not in self._active_telemetry_commands:
+            raise ValueError("Telemetry is accepted only while its command is executing.")
         measured = telemetry.get("measured")
         if (telemetry.get("robot_id") != self.robot_id or telemetry.get("schema_version") != 1
                 or telemetry.get("source_mode") != "SIMULATION" or not isinstance(telemetry.get("controller_id"), str)
@@ -375,14 +389,18 @@ class MqttTransport:
         count = self._telemetry_run_counts.get(command_id, 0)
         last = self._telemetry_run_last_publish.get(command_id)
         if count >= 120 or (last is not None and now - last < 0.5): return False
-        sequence = telemetry["sequence"]
+        last_event_sequence = self._command_event_sequences.get(command_id)
+        if last_event_sequence is None:
+            raise ValueError("Telemetry requires an active command lifecycle.")
+        sequence = last_event_sequence + 1
         event = {"schemaVersion": 1, "kind": "status", "status": "telemetry",
                  "robotId": self.robot_id, "commandId": command_id,
                  "eventId": f"{command_id}:telemetry:{sequence}", "sequence": sequence,
                  "occurredAtMs": int(time.time() * 1000), "telemetry": telemetry}
         published = int(self.client.publish(self.topics["status"], json.dumps(event, separators=(",", ":")), qos=1, retain=False).rc) == 0
         if published:
-            self.last_telemetry_sequence = sequence
+            self._command_event_sequences[command_id] = sequence
+            self.last_telemetry_sequence = telemetry["sequence"]
             self._telemetry_run_counts[command_id] = count + 1
             self._telemetry_run_last_publish[command_id] = now
         return published

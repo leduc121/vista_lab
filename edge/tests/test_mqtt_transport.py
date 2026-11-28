@@ -7,6 +7,7 @@ from edge.safety_controller import LocalSafetyController
 ROBOT = "f1c066c4-b5f2-45c4-b933-f034f3824dd9"
 THING = "vista-demo-" + ROBOT
 CMD = "7b2f9c1e-0d34-4c6a-8e51-2a9b6d4c7f03"
+RUN_ID = "wf03-9fb84446-f86f-4b96-95e5-387147dfb715"
 
 class FakeClient:
     def __init__(self, **kwargs): self.options=kwargs; self.published=[]; self.subscriptions=[]
@@ -47,7 +48,7 @@ class MqttTests(unittest.TestCase):
     def envelope(self, seq=1700000000000):
         now=int(time.time()*1000)
         return {"schemaVersion":1,"kind":"run","commandId":CMD,"robotId":ROBOT,"sequence":seq,
-          "issuedAtMs":now,"expiresAtMs":now+10000,"payload":{"runId":"run-1","robotId":ROBOT,"programVersionId":"version-1","profile":"lesson",
+          "issuedAtMs":now,"expiresAtMs":now+10000,"payload":{"runId":RUN_ID,"robotId":ROBOT,"programVersionId":"version-1","profile":"lesson",
           "program":{"kind":"robot_program","schemaVersion":1,"steps":[{"type":"arm.select","arm":"left"},{"type":"home","arm":"left"}]}}}
     def connect(self):
         with patch.dict("sys.modules",self.modules), patch.dict(os.environ,{"VISTA_IOT_ENABLED":"true"}): return self.transport.connect()
@@ -61,21 +62,22 @@ class MqttTests(unittest.TestCase):
         self.assertEqual(c.published[0][0],f"$aws/things/{THING}/shadow/update")
         self.assertEqual(c.published[0][1]["state"]["reported"]["runtimeKind"], "PHYSICAL_ROBOT")
         envelope=self.envelope(); msg=types.SimpleNamespace(topic=self.transport.topics["commands"],payload=json.dumps(envelope).encode(),retain=False)
+        telemetry={"schema_version":1,"robot_id":ROBOT,"source_mode":"SIMULATION","controller_id":"mock","measured_at":"2026-11-25T00:00:00Z","sequence":1,"connection":"connected","measured":[{"name":name,"position":0.0,"unit":"rad"} for name in ("shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll","gripper")]}
+        self.transport.on_command = lambda payload: (self.called.append(payload["runId"]), self.transport.publish_telemetry(telemetry, command_id=CMD))
         self.transport._on_message(c,None,msg)
-        self.assertEqual(self.called,["run-1"])
+        self.assertEqual(self.called,[RUN_ID])
         self.assertEqual(self.safety.acquired[0][0], "follower-a")
         self.assertEqual(self.safety.acquired[0][1],"MQTT")
         self.assertEqual(len(self.safety.released),1)
         events=[p[1] for p in c.published if p[1].get("commandId")==CMD]
-        self.assertEqual([e["eventId"] for e in events],[f"{CMD}:ack:accepted",f"{CMD}:status:executing",f"{CMD}:status:completed"])
-        self.assertEqual([e["sequence"] for e in events],[envelope["sequence"],envelope["sequence"]+1,envelope["sequence"]+2])
+        self.assertEqual([e["eventId"] for e in events],[f"{CMD}:ack:accepted",f"{CMD}:status:executing",f"{CMD}:telemetry:{envelope['sequence']+2}",f"{CMD}:status:completed"])
+        self.assertEqual([e["sequence"] for e in events],[envelope["sequence"],envelope["sequence"]+1,envelope["sequence"]+2,envelope["sequence"]+3])
         self.assertTrue(all(e["robotId"]==ROBOT and e["occurredAtMs"] for e in events))
-        telemetry={"schema_version":1,"robot_id":ROBOT,"source_mode":"SIMULATION","controller_id":"mock","measured_at":"2026-11-25T00:00:00Z","sequence":1,"connection":"connected","measured":[{"name":name,"position":0.0,"unit":"rad"} for name in ("shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll","gripper")]}
-        self.assertTrue(self.transport.publish_telemetry(telemetry, command_id=CMD))
-        telemetry_event=c.published[-1][1]
+        telemetry_event=next(p[1] for p in c.published if p[1].get("status")=="telemetry")
         self.assertEqual(c.published[-1][0], self.transport.topics["status"])
         self.assertEqual((telemetry_event["kind"], telemetry_event["status"]), ("status", "telemetry"))
-        self.assertEqual(telemetry_event["eventId"], f"{CMD}:telemetry:1")
+        self.assertEqual(telemetry_event["eventId"], f"{CMD}:telemetry:{envelope['sequence']+2}")
+        self.assertEqual(telemetry_event["sequence"], envelope["sequence"] + 2)
         self.assertEqual(telemetry_event["telemetry"], telemetry)
         with self.assertRaises(ValueError): self.transport.publish_telemetry({**telemetry,"source_mode":"LIVE_PHYSICAL"}, command_id=CMD)
 
@@ -158,6 +160,13 @@ class MqttTests(unittest.TestCase):
         self.assertEqual((rejected["status"],rejected["code"]),("rejected","command_payload_invalid"))
         self.assertEqual(self.called,[])
     @unittest.skipIf(os.name=="nt","Windows key ACL validation is fail closed")
+    def test_run_id_must_use_wf03_experiment_identity(self):
+        self.connect(); e=self.envelope(); e["payload"]["runId"]="run-1"
+        self.transport._on_message(self.transport.client,None,types.SimpleNamespace(topic=self.transport.topics["commands"],payload=json.dumps(e).encode(),retain=False))
+        rejected=[p[1] for p in self.transport.client.published if p[1].get("kind")=="ack"][-1]
+        self.assertEqual((rejected["status"],rejected["code"]),("rejected","command_payload_invalid"))
+        self.assertEqual(self.called,[])
+    @unittest.skipIf(os.name=="nt","Windows key ACL validation is fail closed")
     def test_runtime_failure_and_busy_runtime_publish_terminal_failed_without_completion(self):
         self.connect()
         for index, (command_id, failure) in enumerate(((CMD, RuntimeError("runtime_failed")), ("ab1b9c2e-d155-4e4b-bf74-9c3f7e403e1a", RuntimeError("runtime_busy")))):
@@ -176,8 +185,17 @@ class MqttTests(unittest.TestCase):
         frame={"schema_version":1,"robot_id":ROBOT,"source_mode":"SIMULATION","controller_id":"fake",
           "measured_at":"2026-11-25T00:00:00Z","sequence":1,"connection":"connected",
           "measured":[{"name":name,"position":0.0,"unit":"rad"} for name in ("shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll","gripper")]}
+        self.transport._active_telemetry_commands.add(CMD)
+        self.transport._command_event_sequences[CMD] = 1700000000001
         self.assertTrue(self.transport.publish_telemetry(frame, command_id=CMD))
         with self.assertRaisesRegex(ValueError, "increase monotonically"):
+            self.transport.publish_telemetry(frame, command_id=CMD)
+
+    def test_telemetry_requires_an_active_command(self):
+        frame={"schema_version":1,"robot_id":ROBOT,"source_mode":"SIMULATION","controller_id":"fake",
+          "measured_at":"2026-11-25T00:00:00Z","sequence":1,"connection":"connected",
+          "measured":[{"name":name,"position":0.0,"unit":"rad"} for name in ("shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll","gripper")]}
+        with self.assertRaisesRegex(ValueError, "only while its command is executing"):
             self.transport.publish_telemetry(frame, command_id=CMD)
 
     @unittest.skipIf(os.name=="nt","Windows key ACL validation is fail closed")
@@ -186,6 +204,8 @@ class MqttTests(unittest.TestCase):
         frame={"schema_version":1,"robot_id":ROBOT,"source_mode":"SIMULATION","controller_id":"fake",
           "measured_at":"2026-11-25T00:00:00Z","sequence":0,"connection":"connected",
           "measured":[{"name":name,"position":0.0,"unit":"rad"} for name in ("shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll","gripper")]}
+        self.transport._active_telemetry_commands.add(CMD)
+        self.transport._command_event_sequences[CMD] = 1700000000001
         with patch("edge.mqtt_transport.time.monotonic", side_effect=[10.0, 10.1, *[11.0 + i * 0.5 for i in range(121)]]):
             frame["sequence"] = 1
             self.assertTrue(self.transport.publish_telemetry(frame, command_id=CMD))

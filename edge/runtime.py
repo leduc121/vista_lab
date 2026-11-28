@@ -182,8 +182,8 @@ class LeRobotSO101Adapter:
                 installed_lerobot = package_version("lerobot")
             except PackageNotFoundError as error:
                 raise RuntimeError("LeRobot package metadata is unavailable; hardware connection is blocked.") from error
-            if installed_lerobot not in {"0.6.1", "0.6.2"}:
-                raise RuntimeError(f"SO-101 adapter was API-checked for LeRobot 0.6.1/0.6.2; found {installed_lerobot}.")
+            if installed_lerobot != "0.6.1":
+                raise RuntimeError(f"SO-101 adapter is pinned and API-checked for LeRobot 0.6.1; found {installed_lerobot}.")
         owner = SerialPortOwner(port, f"{self.role}-connection").acquire()
         try:
             if self.device_factory is not None:

@@ -135,6 +135,38 @@ class CalibrationWorkflowTests(unittest.TestCase):
             (leader_dir / "external.json").symlink_to(follower_dir / "follower-a.json")
             self.assertEqual([item["id"] for item in CalibrationWorkflow.profiles("leader")["items"]], ["leader-a"])
             self.assertEqual([item["id"] for item in CalibrationWorkflow.profiles("follower")["items"]], ["follower-a"])
+            leader_profile = CalibrationWorkflow.profiles("leader")["items"][0]
+            self.assertFalse(leader_profile["valid"])
+            self.assertIn("six SO-101", leader_profile["error"])
+
+    def test_calibration_never_overwrites_existing_profile(self):
+        with tempfile.TemporaryDirectory(prefix="vista-calibration-protect-") as directory, patch.dict(
+            os.environ, {"HF_LEROBOT_CALIBRATION": directory}
+        ):
+            profile = Path(directory) / "teleoperators" / "so_leader" / "leader-a.json"
+            profile.parent.mkdir(parents=True)
+            profile.write_text('{"owner":"existing"}')
+            before = profile.read_bytes()
+            with self.assertRaisesRegex(FileExistsError, "will not overwrite"):
+                self.workflow.start("leader", "/dev/fake-so101", "leader-a", True)
+            self.assertEqual(profile.read_bytes(), before)
+            self.assertEqual(self.created, [])
+
+    def test_valid_calibration_profile_schema_matches_lerobot_motor_calibration(self):
+        import json
+        with tempfile.TemporaryDirectory(prefix="vista-calibration-valid-") as directory, patch.dict(
+            os.environ, {"HF_LEROBOT_CALIBRATION": directory}
+        ):
+            profile = Path(directory) / "robots" / "so_follower" / "follower-a.json"
+            profile.parent.mkdir(parents=True)
+            calibration = {name: {"id": i, "drive_mode": 0, "homing_offset": 0,
+                                  "range_min": 100, "range_max": 3900}
+                          for i, name in enumerate(("shoulder_pan", "shoulder_lift", "elbow_flex",
+                                                   "wrist_flex", "wrist_roll", "gripper"), 1)}
+            profile.write_text(json.dumps(calibration))
+            item = CalibrationWorkflow.profiles("follower")["items"][0]
+            self.assertTrue(item["valid"])
+            self.assertIsNone(item["error"])
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ by hand. This module is never started by health checks or automated tests.
 from __future__ import annotations
 
 import logging
+import json
+import math
 import os
 import re
 import threading
@@ -26,6 +28,7 @@ _MAX_POSITION = 5000
 _MAX_JUMP = 2000
 _MIN_RANGE = 100
 _SO101_MOTORS = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
+_CALIBRATION_FIELDS = {"id", "drive_mode", "homing_offset", "range_min", "range_max"}
 
 
 class CalibrationWorkflow:
@@ -89,10 +92,42 @@ class CalibrationWorkflow:
         try:
             for path in sorted(directory.glob("*.json")):
                 if path.is_file() and not path.is_symlink():
-                    profiles.append({"id": path.stem, "modified": path.stat().st_mtime})
+                    try:
+                        CalibrationWorkflow._validate_profile_file(path)
+                        valid, error = True, None
+                    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                        valid, error = False, str(exc)[:180]
+                    profiles.append({"id": path.stem, "modified": path.stat().st_mtime,
+                                     "valid": valid, "error": error})
         except OSError:
             return {"role": role, "items": [], "available": False}
         return {"role": role, "items": profiles, "available": True}
+
+    @staticmethod
+    def _profile_path(role: str, profile_id: str) -> Path:
+        root = Path(os.environ.get(
+            "HF_LEROBOT_CALIBRATION",
+            str(Path.home() / ".cache" / "huggingface" / "lerobot" / "calibration"),
+        ))
+        directory = (root / "teleoperators" / "so_leader" if role == "leader"
+                     else root / "robots" / "so_follower")
+        return directory / f"{profile_id}.json"
+
+    @staticmethod
+    def _validate_profile_file(path: Path) -> None:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or set(data) != _SO101_MOTORS:
+            raise ValueError("Calibration must contain exactly the six SO-101 motor records.")
+        for name, record in data.items():
+            if not isinstance(record, dict) or set(record) != _CALIBRATION_FIELDS:
+                raise ValueError(f"Calibration record for {name} has an incompatible LeRobot schema.")
+            if any(isinstance(record[key], bool) or not isinstance(record[key], int)
+                   for key in _CALIBRATION_FIELDS):
+                raise ValueError(f"Calibration record for {name} must contain integer LeRobot fields.")
+            if record["range_min"] < 0 or record["range_max"] > 4095 or record["range_min"] >= record["range_max"]:
+                raise ValueError(f"Calibration range for {name} is invalid.")
+            if not all(math.isfinite(record[key]) for key in _CALIBRATION_FIELDS):
+                raise ValueError(f"Calibration record for {name} contains a non-finite value.")
 
     def start(self, role: str, port: str, profile_id: str, confirmed: bool, slot: str | None = None) -> dict[str, Any]:
         if not confirmed:
@@ -104,6 +139,9 @@ class CalibrationWorkflow:
             raise ValueError("Calibration slot does not match the selected LeRobot role.")
         if not isinstance(profile_id, str) or not _PROFILE_ID.fullmatch(profile_id):
             raise ValueError("Calibration profile ID must be 1–64 letters, digits, dots, dashes, or underscores.")
+        target = self._profile_path(role, profile_id)
+        if target.exists() or target.is_symlink():
+            raise FileExistsError("This LeRobot profile ID already exists. Connect with that ID to reuse it, or choose a new ID; VISTA will not overwrite calibration files.")
         if port not in {row.get("path") for row in self.port_provider()}:
             raise ValueError("Select a currently discovered serial port; ports are never guessed.")
         with self._lock:
