@@ -644,3 +644,23 @@ Required owner-authorized R1 source files: `services/robot-runtime/src/runtime.p
 ## Package checkpoint
 
 Final PR #7 source is `e51a908e73a1c176396ad87b6696ca05af8406ed`; native CI passed. The combined Ubuntu artifact was not retrieved/inspected, and the `0.1.1` DEB from `13fd11f` is stale. After authorized merge, use the existing `.github/workflows/desktop-release-draft.yml` Ubuntu-only job with `source_sha=e51a908e73a1c176396ad87b6696ca05af8406ed` and `create_draft=false`; verify the isolated `vista-desktop-ubuntu-x64` artifact and retain it privately. No release or new package build was run in this pass.
+
+## Queue 06 final Desktop regression — 2026-11-28
+
+- **PASS** `npm test`: 26 API/Electron IPC contract checks and 22 sequential Node subtests (48 total, 0 failed). Includes device/runtime, explicit fake teleoperation, recording, replay, and contract/security coverage.
+- **PASS** `edge/.venv/bin/python -m unittest discover -s edge/tests -p 'test_*.py' -v`: 100 tests, 0 failures. Covers serial ownership, connection/calibration, physical adapter seam, teleoperation, safety/watchdog, MuJoCo/Twin, MQTT command lifecycle and local mock evidence.
+- **PASS** `npm run typecheck` and `npm run build:renderer`. Typecheck is the repository JavaScript syntax checker; no TypeScript compiler/source is configured.
+- **PASS** `timeout 75s npm run smoke` in the authorized host context. Browser Demo smoke covered dashboard, Demo workspace save/version/result, Twin navigation and fake-device station controls. Screenshots are under `/tmp/vista-desktop-smoke/`. First sandbox attempt was blocked by loopback `EPERM`; host-context rerun passed. No live API, hardware or cloud actions occurred.
+- **PASS** `git diff --check`. Full working-tree diff was reviewed; no reproducible P0 software defect was found. No tests were weakened.
+- **NOT RUN** Desktop package/installer and embedded Edge binary rebuild. Physical connection/calibration/motion, AWS/MQTT, backend/S3 evidence persistence, Windows/macOS, clean install, and physical safety acceptance remain unverified.
+- Final report: `QUEUE06_FINAL_ACCEPTANCE_REPORT.md`. Commissioning procedure: `SO101_ONE_PAIR_FINAL_COMMISSIONING_RUNBOOK.md`. No commit, merge, deployment, cloud request or hardware action was performed.
+
+## Final pre-commissioning gate — 2026-11-28
+
+- **Environment audit:** base Python 3.14.6 picks LeRobot 0.6.2; Conda `lerobot` is Python 3.12.13 / LeRobot 0.6.2 / Torch 2.11.0 / NumPy 2.2.6 / pySerial 3.5 / Feetech SDK 1.0.0, but lacks MuJoCo. Clean Python 3.12.14 has none of the robot dependencies. Neither meets Desktop’s exact LeRobot 0.6.1 / Torch 2.7.1 CPU / NumPy 2.2.6 / MuJoCo 3.17.0 runtime preflight. No environment was modified.
+- The isolated setup procedure uses existing `edge/robot-runtime/pyproject.toml` and `uv.lock`: `uv sync --project edge/robot-runtime --locked --python 3.12`; verification and Desktop selection steps are in `QUEUE06_FINAL_ACCEPTANCE_REPORT.md`.
+- **PASS** `VISTA_EDGE_PYTHON=edge/.venv/bin/python npm run dist`: current 0.1.1 Ubuntu x64 AppImage and DEB built. DEB SHA-256 `8dd57ef5db0a1832606ec497fa0932d8b3aafd79b2d822631a5cf2aa4907aef7`; AppImage SHA-256 `d32720041817dc43d77d81cfe49758fe1e6c71e7c6527fa1208033053a774768`.
+- **PASS** extracted DEB under `/tmp` without installation. Bundled Electron app, Edge binary, SO-101 MuJoCo scene and calibration URDF are present. Packaged Edge health/status reported Python 3.11.16, Simulation READY, MuJoCo available, `motionEnabled=false`, `hardwareEnabled=false`, `fakeRobot=true`. Native Electron packaged Demo smoke passed under Xvfb with Simulation profile ready and physical output locked.
+- **NOT RUN** physical LeRobot runtime selection, serial discovery, connection/calibration, hardware output, AWS/MQTT, Production or external upload.
+- Created `CLAUDE_DESKTOP_INTEGRATION_HANDOFF.md` with confirmed incompatibilities separated from unverified questions. Exact hardware safety inputs and safe-stop gap are documented in `QUEUE06_FINAL_ACCEPTANCE_REPORT.md`.
+- Package build and launch smoke are the targeted verification for this documentation/package gate; no expensive source regression was repeated. Prior Queue 06 unit and mock regression evidence remains recorded above.
