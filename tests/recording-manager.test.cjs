@@ -3,13 +3,19 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { RecordingManager } = require('../recording-manager');
+
+function testFrame(timestamp, sequence = 0) {
+  return { measured: true, unit: 'deg', timestamp, joints: Object.fromEntries(
+    ['shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll','gripper'].map((name) => [name, 0])) };
+}
 
 test('recording writes bounded-rate schema frames, integrity metadata, and recovers interrupted sessions', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vista-recording-'));
   try {
     const manager = new RecordingManager(root);
-    const episode = manager.start({ experimentId: 'experiment', robotId: 'robot', slot: 'follower-a', deviceId: 'usb-1', runtimeKind: 'SIMULATION', attemptId: 'attempt-1', programVersionId: 'program-version-1', commandId: 'command-1' });
+    const episode = manager.start({ experimentId: 'experiment', robotId: 'robot', slot: 'follower-a', deviceId: 'usb-1', runtimeKind: 'SIMULATION', attemptId: 'attempt-1', labSessionId: 'lab-session-1', programVersionId: 'program-version-1', commandId: 'command-1', calibrated: true });
     const joints = Object.fromEntries(['shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll','gripper'].map((name) => [name, 0]));
     const first = manager.append({ measured: true, unit: 'deg', joints, timestamp: Date.now()/1000 });
     assert.equal(first.schema_version, 1);
@@ -26,6 +32,8 @@ test('recording writes bounded-rate schema frames, integrity metadata, and recov
     assert.equal(loaded.manifest.attemptId, 'attempt-1');
     assert.equal(loaded.manifest.programVersionId, 'program-version-1');
     assert.equal(loaded.manifest.commandId, 'command-1');
+    assert.equal(loaded.manifest.labSessionId, 'lab-session-1');
+    assert.equal(loaded.manifest.calibrationReference.profileId, 'usb-1');
     fs.appendFileSync(path.join(root, episode.episodeId, 'trajectory.ndjson'), '{"tampered":true}\n');
     assert.equal(manager.verify(episode.episodeId).integrity, 'MISMATCH');
     assert.throws(() => manager.get(episode.episodeId), /checksum/i);
@@ -59,4 +67,53 @@ test('recording writes bounded-rate schema frames, integrity metadata, and recov
     const recovered = new RecordingManager(root).list().find((x) => x.episodeId === pending.episodeId);
     assert.equal(recovered.status, 'INTERRUPTED');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('recording rejects invalid metadata and drops missing, future, or out-of-order observations', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vista-recording-order-'));
+  const originalNow = Date.now;
+  try {
+    const manager = new RecordingManager(root);
+    assert.throws(() => manager.start({ experimentId: 'experiment', robotId: 'robot', slot: 'unknown', deviceId: 'usb-1', runtimeKind: 'SIMULATION' }), /arm slot/i);
+    assert.throws(() => manager.start({ experimentId: '', robotId: 'robot', slot: 'follower-a', deviceId: 'usb-1', runtimeKind: 'SIMULATION' }), /identity/i);
+    manager.start({ experimentId: 'experiment', robotId: 'robot', slot: 'follower-a', deviceId: 'usb-1', runtimeKind: 'SIMULATION' });
+    const firstAt = Date.now() / 1000;
+    assert.ok(manager.append(testFrame(firstAt)));
+    manager.active.lastAt = 0;
+    assert.equal(manager.append(testFrame(firstAt - 1)), null);
+    manager.active.lastAt = 0;
+    assert.equal(manager.append(testFrame(Number.NaN)), null);
+    Date.now = () => originalNow() + 10_000;
+    manager.active.lastAt = 0;
+    assert.equal(manager.append(testFrame(originalNow() / 1000 + 20)), null);
+    Date.now = originalNow;
+    assert.equal(manager.stop().droppedFrames, 3);
+  } finally { Date.now = originalNow; fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('recording cancellation seals a local-only episode and replay rejects invalid ordered frames', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vista-recording-replay-'));
+  const originalNow = Date.now;
+  try {
+    const manager = new RecordingManager(root);
+    const episode = manager.start({ experimentId: 'experiment', robotId: 'robot', slot: 'follower-a', deviceId: 'usb-1', runtimeKind: 'SIMULATION' });
+    const firstAt = Date.now() / 1000;
+    assert.ok(manager.append(testFrame(firstAt)));
+    manager.active.lastAt = 0;
+    assert.ok(manager.append(testFrame(firstAt + 1, 1)));
+    const canceled = manager.cancel();
+    assert.equal(canceled.status, 'CANCELLED');
+    assert.equal(manager.get(episode.episodeId).integrity.integrity, 'VERIFIED');
+
+    const artifactPath = path.join(root, episode.episodeId, 'trajectory.ndjson');
+    const frames = fs.readFileSync(artifactPath, 'utf8').trim().split('\n').map(JSON.parse);
+    frames[1].sequence = 0;
+    const artifact = `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`;
+    fs.writeFileSync(artifactPath, artifact);
+    const manifest = manager.readManifest(manager.directory(episode.episodeId));
+    manifest.artifactIntegrity = { algorithm: 'SHA-256', bytes: Buffer.byteLength(artifact), sha256: crypto.createHash('sha256').update(artifact).digest('hex') };
+    manager.writeManifest(manager.directory(episode.episodeId), manifest);
+    assert.equal(manager.verify(episode.episodeId).integrity, 'MISMATCH');
+    assert.throws(() => manager.get(episode.episodeId), /checksum|structurally verified/i);
+  } finally { Date.now = originalNow; fs.rmSync(root, { recursive: true, force: true }); }
 });

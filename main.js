@@ -155,6 +155,7 @@ app.whenReady().then(() => {
   deviceProvisioning = new DeviceProvisioning({ safeStorage, storageDir: path.join(app.getPath('userData'), 'device-identity') });
   const recordings = new RecordingManager(path.join(app.getPath('userData'), 'recordings'));
   let recordingTimer = null;
+  let recordingGeneration = 0;
   // The renderer can still open when a packaged runtime is absent; setup will report BLOCKED.
   edgeSupervisor.start();
 
@@ -271,21 +272,36 @@ app.whenReady().then(() => {
     const physicalCommand = physicalRun?.command && typeof physicalRun.command === 'object' ? physicalRun.command : {};
     const result = recordings.start({ experimentId, robotId, slot, deviceId: arm.deviceId, calibrated: arm.calibrated === true,
       attemptId: experiment.attempt_id || experiment.attemptId || context.attemptId,
+      labSessionId: context.labSessionId,
       programVersionId: experiment.program_version_id || experiment.programVersionId || context.programVersionId,
       submissionId: experiment.submission_id || experiment.submissionId || context.submissionId,
       commandId: experiment.command_id || experiment.commandId || command.commandId || physicalRun?.commandId || physicalCommand.commandId,
       runId: experiment.run_id || experiment.runId || output.runId || physicalRun?.runId,
       runtimeKind: /PHYSICAL/i.test(arm.mode || '') ? 'PHYSICAL_ROBOT' : /MOCK/i.test(arm.mode || '') ? 'MOCK_RUNTIME' : /SIMULATION/i.test(arm.mode || '') ? 'SIMULATION' : 'UNVERIFIED_RUNTIME' });
+    const generation = ++recordingGeneration;
     const sampleOnce = async () => {
+      if (generation !== recordingGeneration) return;
       if (!recordings.active) { recordingTimer = null; return; }
-      try { const role = slot.startsWith('leader-') ? 'leader' : 'follower'; recordings.append(await edgeSupervisor.request('joint_state', { role, slot }, 3000)); }
-      catch { recordings.stop('INTERRUPTED'); recordingTimer = null; return; }
+      try {
+        const role = slot.startsWith('leader-') ? 'leader' : 'follower';
+        const sample = await edgeSupervisor.request('joint_state', { role, slot }, 3000);
+        if (!recordings.active || generation !== recordingGeneration) return;
+        recordings.append(sample);
+      }
+      catch (error) {
+        if (generation !== recordingGeneration) return;
+        recordingGeneration++;
+        const interrupted = recordings.stop('INTERRUPTED'); recordingTimer = null;
+        if (interrupted && !mainWindow?.isDestroyed()) mainWindow.webContents.send('recording:ended', { episodeId: interrupted.episodeId, status: 'INTERRUPTED', error: String(error.message).slice(0, 240) });
+        return;
+      }
       if (recordings.active) recordingTimer = setTimeout(sampleOnce, 50); else recordingTimer = null;
     };
     recordingTimer = setTimeout(sampleOnce, 0);
     return result;
   });
-  registerHandle('recording:stop', () => { if (recordingTimer) clearTimeout(recordingTimer); recordingTimer = null; return recordings.stop(); });
+  registerHandle('recording:stop', () => { recordingGeneration++; if (recordingTimer) clearTimeout(recordingTimer); recordingTimer = null; return recordings.stop(); });
+  registerHandle('recording:cancel', () => { recordingGeneration++; if (recordingTimer) clearTimeout(recordingTimer); recordingTimer = null; return recordings.cancel(); });
   const postPresigned = (target, fields, filename, fileSize, contentType, onProgress) => new Promise((resolve, reject) => {
     const url = new URL(target); if (url.protocol !== 'https:') return reject(new Error('Presigned upload must use HTTPS.'));
     const boundary = `----VISTA${crypto.randomBytes(18).toString('hex')}`;
@@ -300,7 +316,7 @@ app.whenReady().then(() => {
     requireLocalSession(); if (config.mock) throw new Error('Evidence upload is disabled for Demo sessions.');
     const local = recordings.metadata(episodeId); const m = local.manifest;
     if (!m.endedAtMs || !['LOCAL_RECORDED','FAILED'].includes(m.status)) throw new Error('Only a stopped, non-interrupted local episode can be uploaded.');
-    if (m.declaredRuntimeKind !== 'PHYSICAL_ROBOT') throw new Error('The recording upload contract accepts only owner-authorized real_robot experiments.');
+    if (m.declaredRuntimeKind !== 'PHYSICAL_ROBOT' || !String(m.slot).startsWith('follower-')) throw new Error('The recording upload contract accepts only measured follower frames from owner-authorized real_robot experiments.');
     const integrity = recordings.verify(episodeId);
     if (integrity.integrity !== 'VERIFIED') throw new Error('Recording checksum is missing or does not match its sealed manifest.');
     const dir = recordings.directory(episodeId); const artifactPath = path.join(dir, 'trajectory.ndjson'); const fileSize = integrity.bytes;

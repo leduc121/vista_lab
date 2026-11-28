@@ -8,7 +8,7 @@
   "scripts": {
     "build:renderer": "node scripts/build-renderer.cjs",
     "typecheck": "node scripts/check-source.cjs",
-    "test": "node tests/api.contract.test.cjs && node --test --test-concurrency=1 tests/robot-runtime.test.cjs tests/edge-supervisor.test.cjs tests/device-provisioning.test.cjs tests/teleoperation.test.cjs tests/container-port-forwarder.test.cjs tests/recording-manager.test.cjs tests/policy-action-recorder.test.cjs",
+    "test": "node tests/api.contract.test.cjs && node --test --test-concurrency=1 tests/robot-runtime.test.cjs tests/edge-supervisor.test.cjs tests/device-provisioning.test.cjs tests/teleoperation.test.cjs tests/container-port-forwarder.test.cjs tests/recording-manager.test.cjs tests/recording-playback.test.cjs tests/policy-action-recorder.test.cjs",
     "test:integration": "node scripts/integration-acceptance.cjs",
     "smoke": "npm run build:renderer && node scripts/desktop-smoke.cjs",
     "smoke:electron": "npm run build:renderer && node scripts/electron-smoke.cjs",

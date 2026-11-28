@@ -1,4 +1,5 @@
 import { mountTwinViewer, parseTwinFrame } from './twin-viewer.js';
+import { RecordingPlayback } from './recording-playback.js';
 
 const root = document.getElementById('root');
 const TERMINAL = ['succeeded', 'failed', 'cancelled', 'stopped', 'timed_out', 'preflight_failed'];
@@ -825,20 +826,21 @@ async function robotStationView() {
     };
     const ranges = calibration?.ranges || {};
     const calibrationState = calibration?.status || 'idle';
+    const selectedProfileExists = profileChoices.some((item) => item.id === profileId);
     const calControls = h('section', { class: 'robot-calibration-panel', 'aria-label': 'Guided LeRobot calibration' },
       h('div', { class: 'robot-section-title' }, h('div', {}, h('h2', {}, 'Guided calibration'), h('p', {}, 'LeLab’s verified sequence: neutral homing capture, then manual joint-range recording.')),
         h('span', { class: `robot-state ${calibration?.calibrated ? 'connected' : ''}`, role: 'status' }, calibrationState)),
       h('div', { class: 'robot-calibration-grid' },
         h('label', { class: 'robot-field' }, 'Device', h('select', { value: calibrationRole, 'aria-label': 'Calibration device role', onchange: (event) => { calibrationRole = event.target.value; profileId = roles[calibrationRole].deviceId; loadState(); } }, ...armSlots.map((slot) => h('option', { value: slot }, armLabel(slot))))),
         h('label', { class: 'robot-field' }, 'Serial port', h('select', { value: roles[calibrationRole].port, 'aria-label': 'Calibration serial port', onchange: (event) => { roles[calibrationRole].port = event.target.value; render(); } }, ...portOptions(roles[calibrationRole].port))),
-        h('label', { class: 'robot-field' }, 'Saved LeRobot profile', h('select', { value: profileChoices.some((item) => item.id === profileId) ? profileId : '', 'aria-label': 'Saved LeRobot calibration profiles', onchange: (event) => { if (event.target.value) { profileId = event.target.value; roles[calibrationRole].deviceId = profileId; render(); } } }, h('option', { value: '' }, profileChoices.length ? 'Choose a saved profile to reload' : 'No saved profiles found'), ...profileChoices.map((item) => h('option', { value: item.id }, `${item.id} · ${new Date(item.modified * 1000).toLocaleDateString()}`)))),
-        h('label', { class: 'robot-field' }, 'Profile ID for save or reload', h('input', { value: profileId, maxlength: '64', 'aria-label': 'Calibration profile ID', oninput: (event) => { profileId = event.target.value; } }))),
+        h('label', { class: 'robot-field' }, 'Saved LeRobot profile', h('select', { value: profileChoices.some((item) => item.id === profileId) ? profileId : '', 'aria-label': 'Saved LeRobot calibration profiles', onchange: (event) => { if (event.target.value) { profileId = event.target.value; roles[calibrationRole].deviceId = profileId; render(); } } }, h('option', { value: '' }, profileChoices.length ? 'Choose a saved profile to reuse' : 'No saved profiles found'), ...profileChoices.map((item) => h('option', { value: item.id }, `${item.id} · ${item.valid ? 'valid' : `invalid: ${item.error}`} · ${new Date(item.modified * 1000).toLocaleDateString()}`)))),
+        h('label', { class: 'robot-field' }, 'New calibration profile ID', h('input', { value: profileId, maxlength: '64', 'aria-label': 'New calibration profile ID', oninput: (event) => { profileId = event.target.value; } }))),
       h('ol', { class: 'robot-calibration-steps' },
         h('li', {}, h('strong', {}, 'Neutral homing capture'), h('p', {}, 'Place all joints near the middle of travel. Starting calibration disables torque, selects position operating mode, resets the device calibration, reads encoder positions, and writes half-turn homing offsets.'), h('span', {}, calibration?.step >= 1 ? 'Confirmed by Edge Runtime' : 'Waiting')),
         h('li', {}, h('strong', {}, 'Record joint ranges'), h('p', {}, 'With torque disabled, manually sweep every joint from its minimum to maximum safe range. Stop if any cable, object, or person is in the arm’s path.'), h('span', {}, calibrationState === 'recording' ? 'Recording live encoder ranges' : calibration?.calibrated ? 'Profile saved by LeRobot' : 'Waiting'))),
       h('label', { class: 'robot-consent' }, h('input', { type: 'checkbox', checked: hardwareAuthorized, onchange: (event) => { hardwareAuthorized = event.target.checked; render(); } }), 'I am supervising the connected hardware and authorize this manual calibration procedure.'),
       h('div', { class: 'robot-actions' },
-        h('button', { class: 'primary', disabled: busy || calibration?.active || !hardwareAuthorized || !roles[calibrationRole].port, onclick: async () => {
+        h('button', { class: 'primary', disabled: busy || calibration?.active || !hardwareAuthorized || !roles[calibrationRole].port || selectedProfileExists, onclick: async () => {
           if (!window.confirm('Calibration writes homing offsets and saves a local LeRobot profile. Torque is disabled; an operator must move the arm by hand. Continue on the selected hardware?')) return;
           busy = true; render();
           try {
@@ -864,7 +866,8 @@ async function robotStationView() {
       calibration?.message ? h('p', { class: 'robot-meta', role: 'status' }, calibration.message) : null,
       calibration?.warnings?.length ? h('p', { class: 'robot-warning', role: 'status' }, `LeRobot range warning: ${calibration.warnings.join('; ')}`) : null,
       calibration?.error ? h('p', { class: 'robot-error', role: 'alert' }, calibration.error) : null,
-      h('p', { class: 'robot-meta' }, `${profileChoices.length} stored profile(s) listed from the LeRobot calibration directory. Choose one above to reuse its ID, then connect that role; LeRobot loads it from disk and VISTA reports calibrated only when the driver confirms it.`));
+      selectedProfileExists ? h('p', { class: 'robot-warning', role: 'status' }, 'This profile already exists. Connect the selected role with this ID to reuse it; choose a new ID before starting calibration. Existing calibration files are never overwritten.') : null,
+      h('p', { class: 'robot-meta' }, `${profileChoices.length} stored profile(s) listed from the LeRobot calibration directory. Valid profiles are labeled and can be reused by connecting with their ID. Invalid files remain visible for diagnosis but are not treated as calibrated.`));
     const policyPanel = h('section', { class: 'robot-teleop-panel', 'aria-label': 'Hugging Face policy management' },
       h('div', { class: 'robot-section-title' }, h('div', {}, h('h2', {}, 'Hugging Face policies'), h('p', {}, 'Import version-pinned LeRobot checkpoints. Repository code is never executed.'))),
       h('div', { class: 'robot-actions' },
@@ -1673,41 +1676,50 @@ async function twinWorkspaceView() {
 
 async function recordsView() {
   sheetEl.replaceChildren(h('div', { class: 'sheet-container' }, h('h1', {}, 'Recordings & Evidence'), h('div', { class: 'loading-bar' })));
-  let episodes = [], experiments = [], selectedEpisode = null, frames = [], playing = false, frameIndex = 0, speed = 1, timer = null, replayViewer = null, replayHost = h('div', { class: 'twin-canvas replay-canvas' });
+  let episodes = [], experiments = [], selectedEpisode = null, frames = [], replayViewer = null, replayHost = h('div', { class: 'twin-canvas replay-canvas' });
   try { [episodes, experiments] = await Promise.all([bridge.recordingList(), call('history')]); }
   catch (error) { episodes = await bridge.recordingList().catch(() => []); }
   if (view !== 'records') return;
   const list = h('div', { class: 'recording-list' });
   const detail = h('div', { class: 'detail-panel recording-detail' }, h('p', { class: 'faint' }, 'Chọn một episode để xem metadata và replay cục bộ.'));
+  playback = new RecordingPlayback({ onFrame: () => renderDetail(), onStop: () => renderDetail() });
+  let playback;
   const experiment = h('select', { 'aria-label': 'Experiment context' }, h('option', { value: '' }, 'Chọn experiment đã xác thực'), ...experiments.map((x) => h('option', { value: x.id }, `${x.title || x.name || x.id} · ${x.execution_mode || x.method || 'experiment'}`)));
   const slot = h('select', { 'aria-label': 'Arm slot' }, ...['leader-a','follower-a','leader-b','follower-b'].map((x) => h('option', { value: x }, x)));
-  const refreshList = async () => { episodes = await bridge.recordingList().catch(() => episodes); list.replaceChildren(...episodes.map((ep) => h('button', { class: 'recording-row', onclick: () => openEpisode(ep.episodeId), disabled: ep.status === 'CORRUPT' }, h('strong', {}, ep.episodeId), h('span', {}, `${ep.status} · ${ep.frames ?? 0} frames · ${ep.declaredRuntimeKind || 'unknown'} · integrity ${ep.integrity || 'UNVERIFIED'}`), h('small', {}, ep.startedAtMs ? new Date(ep.startedAtMs).toLocaleString() : (ep.integrityError || 'Recording metadata unavailable'))))); };
+  const refreshList = async () => { episodes = await bridge.recordingList().catch(() => episodes); list.replaceChildren(...episodes.map((ep) => h('button', { class: 'recording-row', onclick: () => openEpisode(ep.episodeId), disabled: ep.status === 'CORRUPT' || ep.integrity !== 'VERIFIED' }, h('strong', {}, ep.episodeId), h('span', {}, `${ep.status} · ${ep.frames ?? 0} frames · ${ep.declaredRuntimeKind || 'unknown'} · integrity ${ep.integrity || 'UNVERIFIED'}`), h('small', {}, ep.startedAtMs ? new Date(ep.startedAtMs).toLocaleString() : (ep.integrityError || ep.validationError || 'Recording metadata unavailable'))))); };
   const openEpisode = async (id) => {
-    try { replayViewer?.dispose(); replayViewer = null; const result = await bridge.recordingGet(id); selectedEpisode = result.manifest; frames = result.frames; frameIndex = 0; replayHost = h('div', { class: 'twin-canvas replay-canvas' }); renderDetail(); replayViewer = await mountTwinViewer(replayHost); renderDetail(); }
+    try { playback.cancel(); replayViewer?.dispose(); replayViewer = null; const result = await bridge.recordingGet(id); selectedEpisode = result.manifest; frames = result.frames; playback.configure(frames.length, 0); replayHost = h('div', { class: 'twin-canvas replay-canvas' }); renderDetail(); replayViewer = await mountTwinViewer(replayHost); renderDetail(); }
     catch (error) { detail.replaceChildren(h('div', { class: 'err' }, error.message)); }
   };
   const renderDetail = () => {
     if (!selectedEpisode) return;
-    const f = frames[Math.min(frameIndex, Math.max(0, frames.length - 1))];
+    const f = frames[Math.min(playback.index, Math.max(0, frames.length - 1))];
     if (f) replayViewer?.setFrame({ ...f, source_mode: 'REPLAY' });
     const listed = episodes.find((x) => x.episodeId === selectedEpisode.episodeId);
-    const correlation = ['attemptId','programVersionId','submissionId','commandId','runId'].filter((key) => selectedEpisode[key]).map((key) => `${key}=${selectedEpisode[key]}`).join(' · ');
+    const correlation = ['attemptId','labSessionId','programVersionId','submissionId','commandId','runId'].filter((key) => selectedEpisode[key]).map((key) => `${key}=${selectedEpisode[key]}`).join(' · ');
     detail.replaceChildren(h('div', { class: 'recording-meta' }, h('strong', {}, selectedEpisode.status), h('span', {}, `${selectedEpisode.declaredRuntimeKind} · ${selectedEpisode.slot} · ${selectedEpisode.deviceId}`), h('span', {}, `${selectedEpisode.frames} frames · integrity ${listed?.integrity || 'UNVERIFIED'} · SHA-256 ${listed?.sha256 || 'unavailable'}`), ...(correlation ? [h('span', {}, `Correlation · ${correlation}`)] : [])),
-      h('div', { class: 'recording-timeline' }, h('input', { type: 'range', min: 0, max: Math.max(0, frames.length - 1), value: frameIndex, oninput: (e) => { frameIndex = Number(e.target.value); renderDetail(); } }), h('span', {}, `${frameIndex + 1} / ${frames.length}`)),
-      h('div', { class: 'recording-controls' }, h('button', { class: 'ghost', onclick: () => { playing = !playing; if (timer) clearInterval(timer); if (playing) timer = setInterval(() => { frameIndex = (frameIndex + 1) % Math.max(1, frames.length); renderDetail(); }, 100 / speed); renderDetail(); } }, playing ? 'Pause' : 'Play'), h('select', { value: String(speed), onchange: (e) => { speed = Number(e.target.value); if (playing) { clearInterval(timer); timer = setInterval(() => { frameIndex = (frameIndex + 1) % Math.max(1, frames.length); renderDetail(); }, 100 / speed); } } }, ...[0.25,0.5,1,2].map((v) => h('option', { value: String(v) }, `${v}×`))), h('span', { class: 'faint' }, 'Visualization replay only · physical replay disabled')),
-      h('div', { class: 'recording-controls' }, h('button', { class: 'ghost', disabled: ['UPLOADING','UPLOADED','PROCESSING','VERIFIED','INTERRUPTED','CORRUPT'].includes(selectedEpisode.status) || listed?.integrity !== 'VERIFIED' || selectedEpisode.declaredRuntimeKind !== 'PHYSICAL_ROBOT', onclick: async () => { try { status.textContent = 'Uploading authorized trajectory and manifest…'; await bridge.recordingUpload(selectedEpisode.episodeId); status.textContent = 'Upload and manifest POST accepted; processing is pending API evidence confirmation.'; await refreshList(); await openEpisode(selectedEpisode.episodeId); } catch (error) { status.textContent = `Upload failed: ${error.message}`; } } }, selectedEpisode.status === 'PROCESSING' ? 'Processing' : 'Upload evidence'), h('button', { class: 'ghost', disabled: !selectedEpisode.experimentId, onclick: async () => { try { const response = await call('experimentRecordings', selectedEpisode.experimentId); const items = Array.isArray(response) ? response : response.items || []; const match = items.find((item) => item.episodeId === selectedEpisode.episodeId); if (match?.availability === 'available') { selectedEpisode.status = 'VERIFIED'; status.textContent = `Evidence available from Education API · runtimeVerified=${match.runtimeVerified === true}`; await refreshList(); } else status.textContent = match ? `Evidence ${match.availability || 'status pending'}` : 'Upload accepted; the recording processor has not published an evidence row yet.'; } catch (error) { status.textContent = `Evidence status unavailable: ${error.message}`; } } }, 'Check evidence status')),
+      h('div', { class: 'recording-timeline' }, h('input', { type: 'range', min: 0, max: Math.max(0, frames.length - 1), value: playback.index, oninput: (e) => playback.seek(Number(e.target.value)) }), h('span', {}, `${playback.index + 1} / ${frames.length}`)),
+      h('div', { class: 'recording-controls' }, h('button', { class: 'ghost', disabled: frames.length < 2, onclick: () => { playback.toggle(playback.speed); renderDetail(); } }, playback.playing ? 'Pause' : 'Play'), h('select', { value: String(playback.speed), onchange: (e) => playback.setSpeed(Number(e.target.value)) }, ...[0.25,0.5,1,2].map((v) => h('option', { value: String(v) }, `${v}×`))), h('span', { class: 'faint' }, 'Visualization replay only · physical replay disabled')),
+      h('div', { class: 'recording-controls' }, h('button', { class: 'ghost', disabled: ['UPLOADING','UPLOADED','PROCESSING','VERIFIED','INTERRUPTED','CORRUPT','CANCELLED'].includes(selectedEpisode.status) || listed?.integrity !== 'VERIFIED' || selectedEpisode.declaredRuntimeKind !== 'PHYSICAL_ROBOT' || !String(selectedEpisode.slot).startsWith('follower-'), onclick: async () => { try { status.textContent = 'Uploading authorized trajectory and manifest…'; await bridge.recordingUpload(selectedEpisode.episodeId); status.textContent = 'Upload and manifest POST accepted; processing is pending API evidence confirmation.'; await refreshList(); await openEpisode(selectedEpisode.episodeId); } catch (error) { status.textContent = `Upload failed: ${error.message}`; } } }, selectedEpisode.status === 'PROCESSING' ? 'Processing' : 'Upload evidence'), h('button', { class: 'ghost', disabled: !selectedEpisode.experimentId, onclick: async () => { try { const response = await call('experimentRecordings', selectedEpisode.experimentId); const items = Array.isArray(response) ? response : response.items || []; const match = items.find((item) => item.episodeId === selectedEpisode.episodeId); if (match?.availability === 'available') { selectedEpisode.status = 'VERIFIED'; status.textContent = `Evidence available from Education API · runtimeVerified=${match.runtimeVerified === true}`; await refreshList(); } else status.textContent = match ? `Evidence ${match.availability || 'status pending'}` : 'Upload accepted; the recording processor has not published an evidence row yet.'; } catch (error) { status.textContent = `Evidence status unavailable: ${error.message}`; } } }, 'Check evidence status')),
       replayHost,
       h('pre', { class: 'recording-frame' }, f ? JSON.stringify(f.measured, null, 2) : 'No frames'));
   };
-  const start = h('button', { class: 'primary', onclick: async () => { try { await bridge.recordingStart({ experimentId: experiment.value, slot: slot.value }); start.disabled = true; start.textContent = 'Recording…'; } catch (e) { status.textContent = e.message; } } }, 'Start recording');
-  const stop = h('button', { class: 'ghost', onclick: async () => { try { await bridge.recordingStop(); start.disabled = false; start.textContent = 'Start recording'; status.textContent = 'Episode saved locally with integrity hash.'; await refreshList(); } catch (e) { status.textContent = e.message; } } }, 'Stop & save');
+  const start = h('button', { class: 'primary', onclick: async () => { try { await bridge.recordingStart({ experimentId: experiment.value, slot: slot.value }); start.disabled = true; stop.disabled = false; cancel.disabled = false; start.textContent = 'Recording…'; status.textContent = 'Recording measured observations to local storage.'; } catch (e) { status.textContent = e.message; } } }, 'Start recording');
+  const stop = h('button', { class: 'ghost', disabled: true, onclick: async () => { try { const result = await bridge.recordingStop(); start.disabled = false; stop.disabled = true; cancel.disabled = true; start.textContent = 'Start recording'; status.textContent = result ? `Episode saved locally · ${result.frames} frames · SHA-256 verified.` : 'No recording is active.'; await refreshList(); } catch (e) { status.textContent = e.message; } } }, 'Stop & save');
+  const cancel = h('button', { class: 'ghost', disabled: true, onclick: async () => { try { const result = await bridge.recordingCancel(); start.disabled = false; stop.disabled = true; cancel.disabled = true; start.textContent = 'Start recording'; status.textContent = result ? 'Recording canceled and retained locally; it is not eligible for upload.' : 'No recording is active.'; await refreshList(); } catch (e) { status.textContent = e.message; } } }, 'Cancel recording');
   const status = h('p', { class: 'robot-meta', role: 'status' }, 'Camera recording unavailable: no supported adapter. Cloud upload requires owner-authorized PHYSICAL_ROBOT experiment and valid API-issued presigned POST.');
   const unsubscribeProgress = bridge.onRecordingProgress?.(({ percent }) => { if (view === 'records') status.textContent = `Evidence upload: ${percent}%`; });
+  const unsubscribeRecordingEnded = bridge.onRecordingEnded?.(({ status: terminal, error }) => {
+    if (view !== 'records') return;
+    start.disabled = false; stop.disabled = true; cancel.disabled = true; start.textContent = 'Start recording';
+    status.textContent = `Recording ended ${terminal.toLowerCase()} after a sampling error: ${error}`;
+    void refreshList();
+  });
   sheetEl.replaceChildren(h('div', { class: 'sheet-container' }, h('div', { class: 'view-title-row' }, h('div', {}, h('h1', {}, 'Recordings & Evidence'), h('p', { class: 'view-subline' }, 'Episode trajectory, local replay và upload state được tách rõ.')), h('button', { class: 'ghost', onclick: refreshList }, 'Refresh')),
-    h('section', { class: 'detail-panel recording-start' }, h('label', {}, 'Experiment', experiment), h('label', {}, 'Local arm', slot), start, stop), status,
+    h('section', { class: 'detail-panel recording-start' }, h('label', {}, 'Experiment', experiment), h('label', {}, 'Local arm', slot), start, stop, cancel), status,
     h('div', { class: 'recordings-layout' }, h('section', {}, h('h2', {}, 'Episode library'), list), detail)));
-  await refreshList(); if (episodes.length) openEpisode(episodes[0].episodeId);
-  timers.push(() => { if (timer) clearInterval(timer); playing = false; replayViewer?.dispose(); replayViewer = null; unsubscribeProgress?.(); });
+  await refreshList(); const latestVerified = episodes.find((episode) => episode.integrity === 'VERIFIED'); if (latestVerified) openEpisode(latestVerified.episodeId);
+  timers.push(() => { playback.cancel(); replayViewer?.dispose(); replayViewer = null; unsubscribeProgress?.(); unsubscribeRecordingEnded?.(); });
 }
 
 /* ==========================================================================
